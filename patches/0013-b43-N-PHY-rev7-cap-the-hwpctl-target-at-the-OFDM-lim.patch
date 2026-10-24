@@ -1,0 +1,47 @@
+From acb100f681fc7544d2270c0b921f05b051e70c32 Mon Sep 17 00:00:00 2001
+From: Luca Casati <luk00casati@gmail.com>
+Date: Sat, 24 Oct 2026 23:16:58 +0200
+Subject: [PATCH 13/14] b43: N-PHY rev7+: cap the hwpctl target at the OFDM
+ limit
+
+b43 has no per-rate power offsets, so every frame goes out at the
+hwpctl target, which was the highest per-rate SPROM limit (CCK). With
+TSSI working that put OFDM 2 dB over its own SPROM limit on a BCM43228
+and into iPA compression: 54M success 17-36%, against 77-97% at the
+OFDM limit.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/net/wireless/broadcom/b43/phy_n.c | 16 ++++++++++++++++
+ 1 file changed, 16 insertions(+)
+
+diff --git a/drivers/net/wireless/broadcom/b43/phy_n.c b/drivers/net/wireless/broadcom/b43/phy_n.c
+index f8818e67a..4b697c5ac 100644
+--- a/drivers/net/wireless/broadcom/b43/phy_n.c
++++ b/drivers/net/wireless/broadcom/b43/phy_n.c
+@@ -4208,6 +4208,22 @@ static void b43_nphy_tx_power_ctl_setup(struct b43_wldev *dev)
+ 	}
+ 
+ 	ppr_max = b43_ppr_get_max(dev, &nphy->tx_pwr_max_ppr);
++	/*
++	 * b43 has no per-rate power offsets, so every frame goes out at
++	 * this target. On rev7+ (where TSSI now closes the loop) the CCK
++	 * limit put OFDM 2 dB over its own SPROM limit and into PA
++	 * compression: 54M success fell to 17-36% vs ~81% at the OFDM
++	 * limit. Use the highest OFDM limit instead.
++	 */
++	if (ppr_max && phy->rev >= 7) {
++		u8 ofdm_max = 0;
++
++		for (i = 0; i < B43_PPR_OFDM_RATES_NUM; i++)
++			ofdm_max = max(ofdm_max,
++				       nphy->tx_pwr_max_ppr.rates.ofdm[i]);
++		if (ofdm_max)
++			ppr_max = min(ppr_max, ofdm_max);
++	}
+ 	if (ppr_max) {
+ 		target[0] = ppr_max;
+ 		target[1] = ppr_max;
+-- 
+2.43.0
+

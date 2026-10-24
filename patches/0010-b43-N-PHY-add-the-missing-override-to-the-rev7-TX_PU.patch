@@ -1,0 +1,30 @@
+From 41746b722f6ff98b297bd4f9026c6b09b2380856 Mon Sep 17 00:00:00 2001
+From: Luca Casati <luk00casati@gmail.com>
+Date: Sat, 24 Oct 2026 23:16:57 +0200
+Subject: [PATCH 10/14] b43: N-PHY: add the missing override to the rev7 TX_PU
+ command
+
+brcmsmac's NPHY_REV7_RfctrlOverride_cmd_tx_pu also sets field 0x4 of
+override bank 2; b43 left it out, so e.g. the PAPD cal setup did not
+match brcmsmac or wl.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/net/wireless/broadcom/b43/phy_n.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/drivers/net/wireless/broadcom/b43/phy_n.c b/drivers/net/wireless/broadcom/b43/phy_n.c
+index 49d29ac09..d91f7d563 100644
+--- a/drivers/net/wireless/broadcom/b43/phy_n.c
++++ b/drivers/net/wireless/broadcom/b43/phy_n.c
+@@ -240,6 +240,7 @@ static void b43_nphy_rf_ctl_override_one_to_many(struct b43_wldev *dev,
+ 		b43_nphy_rf_ctl_override_rev7(dev, 0x4, value, core, off, 0);
+ 		b43_nphy_rf_ctl_override_rev7(dev, 0x2, value, core, off, 1);
+ 		b43_nphy_rf_ctl_override_rev7(dev, 0x1, value, core, off, 2);
++		b43_nphy_rf_ctl_override_rev7(dev, 0x4, value, core, off, 2);
+ 		b43_nphy_rf_ctl_override_rev7(dev, 0x0800, 1, core, off, 1);
+ 		break;
+ 	case N_RF_CTL_OVER_CMD_RX_GAIN:
+-- 
+2.43.0
+

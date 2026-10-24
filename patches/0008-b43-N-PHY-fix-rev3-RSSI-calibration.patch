@@ -1,0 +1,64 @@
+From 62156eca1a421c9ce8e824e0c28557c98ff564fa Mon Sep 17 00:00:00 2001
+From: Luca Casati <luk00casati@gmail.com>
+Date: Sat, 24 Oct 2026 23:16:56 +0200
+Subject: [PATCH 08/14] b43: N-PHY: fix rev3+ RSSI calibration
+
+Three bugs in b43_nphy_rev3_rssi_cal():
+
+- On rev7+ the selected VCM was written using the loop counter (8 after
+  the search loop) instead of vcm_final; the 3-bit field turned that
+  into VCM 0 on every rev7+ PHY.
+- The distance used I*I + Q*I instead of I*I + Q*Q (brcmsmac
+  wlc_phy_rssi_cal_nphy_rev3()).
+- Negative W1/W2 offsets were rounded as -(abs(x + 4) / 8) instead of
+  -((abs(x) + 4) / 8).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/net/wireless/broadcom/b43/phy_n.c | 12 ++++++++----
+ 1 file changed, 8 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/net/wireless/broadcom/b43/phy_n.c b/drivers/net/wireless/broadcom/b43/phy_n.c
+index 1ff95c736..7d78886d4 100644
+--- a/drivers/net/wireless/broadcom/b43/phy_n.c
++++ b/drivers/net/wireless/broadcom/b43/phy_n.c
+@@ -2187,7 +2187,7 @@ static void b43_nphy_rev3_rssi_cal(struct b43_wldev *dev)
+ 				continue;
+ 			for (vcm = 0; vcm < 8; vcm++) {
+ 				currd = results[vcm][i] * results[vcm][i] +
+-					results[vcm][i + 1] * results[vcm][i];
++					results[vcm][i + 1] * results[vcm][i + 1];
+ 				if (currd < mind) {
+ 					mind = currd;
+ 					minvcm = vcm;
+@@ -2199,12 +2199,16 @@ static void b43_nphy_rev3_rssi_cal(struct b43_wldev *dev)
+ 			results_min[i] = minpoll;
+ 		}
+ 
+-		/* Select the best VCM */
++		/*
++		 * Select the best VCM. (This used to write the loop counter,
++		 * 8, which the 3-bit field turned into VCM 0 on every rev7+
++		 * PHY.)
++		 */
+ 		if (dev->phy.rev >= 7)
+ 			b43_radio_maskset(dev,
+ 					  core ? R2057_NB_MASTER_CORE1 :
+ 						 R2057_NB_MASTER_CORE0,
+-					  ~R2057_VCM_MASK, vcm);
++					  ~R2057_VCM_MASK, vcm_final);
+ 		else
+ 			b43_radio_maskset(dev, r | B2056_RX_RSSI_MISC,
+ 					  0xE3, vcm_final << 2);
+@@ -2239,7 +2243,7 @@ static void b43_nphy_rev3_rssi_cal(struct b43_wldev *dev)
+ 				if (j / 2 == core) {
+ 					offset[j] = 232 - poll_results[j];
+ 					if (offset[j] < 0)
+-						offset[j] = -(abs(offset[j] + 4) / 8);
++						offset[j] = -((abs(offset[j]) + 4) / 8);
+ 					else
+ 						offset[j] = (offset[j] + 4) / 8;
+ 					b43_nphy_scale_offset_rssi(dev, 0,
+-- 
+2.43.0
+

@@ -1,0 +1,128 @@
+From c092aa82367c040298ce2b39ec161fb4b0aafcd0 Mon Sep 17 00:00:00 2001
+From: Luca Casati <luk00casati@gmail.com>
+Date: Sat, 24 Oct 2026 21:38:43 +0200
+Subject: [PATCH 06/14] b43: N-PHY rev7+: optional init calibration
+ (nphy_initcal)
+
+prepare_structs sets perical to 2, which in b43_phy_initn() skips not
+only the second RSSI calibration but every TX IQ/LO, RX IQ and PAPD
+calibration as well; wl runs those on init. Add nphy_initcal=1 to run
+them anyway (off by default until it shows a gain).
+
+Also fill in the "Pre Calibrate TX Gain" TODO for rev7-18 with internal
+TX IQ/LO cal (brcmsmac's wlc_phy_precal_txgain_nphy() fixed indices;
+index 11 and bbmult 0x4040 for radio 2057 rev 9 on 2 GHz, as wl does),
+and set txcal_bbmult, which was never initialised: at 0 every ladder
+step had zero amplitude.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/net/wireless/broadcom/b43/phy_n.c | 72 ++++++++++++++++++++++-
+ 1 file changed, 69 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/net/wireless/broadcom/b43/phy_n.c b/drivers/net/wireless/broadcom/b43/phy_n.c
+index c5f954a97..aaeec2e80 100644
+--- a/drivers/net/wireless/broadcom/b43/phy_n.c
++++ b/drivers/net/wireless/broadcom/b43/phy_n.c
+@@ -37,6 +37,10 @@ MODULE_PARM_DESC(nphy_txidx, "N-PHY rev7+ fixed TX gain index when power control
+ static int modparam_nphy_papd = -1;
+ module_param_named(nphy_papd, modparam_nphy_papd, int, 0444);
+ MODULE_PARM_DESC(nphy_papd, "N-PHY PAPD for internal PA: 0=off, 1=on uncalibrated, 2=calibrate (rev7+, experimental), -1=auto (off on rev7+)");
++
++static int modparam_nphy_initcal;
++module_param_named(nphy_initcal, modparam_nphy_initcal, int, 0444);
++MODULE_PARM_DESC(nphy_initcal, "N-PHY: run TX IQ/LO and RX IQ calibration (and PAPD with nphy_papd=2) on init; perical=2 skips them otherwise");
+ #include "main.h"
+ #include "ppr.h"
+ 
+@@ -6570,6 +6574,52 @@ static void b43_nphy_papd_cal(struct b43_wldev *dev)
+ 		b43_nphy_stay_in_carrier_search(dev, false);
+ }
+ 
++/*
++ * TX gain for the internal TX IQ/LO cal on rev7+ (brcmsmac's
++ * wlc_phy_precal_txgain_nphy() uses a fixed TX power index there). wl
++ * 6.30 calibrates radio 2057 rev 9 at index 11 (gain code 0x6067), so use
++ * that; otherwise follow brcmsmac. Returns false to keep the current gains.
++ */
++static bool b43_nphy_precal_tx_gains(struct b43_wldev *dev,
++				     struct nphy_txgains *target)
++{
++	struct b43_phy *phy = &dev->phy;
++	const u32 *table;
++	u8 index;
++	u32 g;
++	int i;
++
++	if (phy->rev < 7 || phy->rev >= 19 || !phy->n->use_int_tx_iq_lo_cal)
++		return false;
++
++	if (phy->radio_rev == 3 || phy->radio_rev == 4 || phy->radio_rev == 6)
++		index = 10;
++	else if (phy->radio_rev == 9 &&
++		 b43_current_band(dev->wl) == NL80211_BAND_2GHZ)
++		index = 11;
++	else
++		index = 0;
++
++	table = b43_nphy_get_tx_gain_table(dev);
++	if (!table)
++		return false;
++	g = table[index];
++
++	for (i = 0; i < 2; i++) {
++		target->ipa[i] = (g >> 16) & 0x7;
++		target->pad[i] = (g >> 19) & 0x1F;
++		target->pga[i] = (g >> 24) & 0xF;
++		target->txgm[i] = (g >> 28) & 0x7;
++		target->tx_lpf[i] = (g >> 31) & 0x1;
++	}
++
++	/* wl's TX gain control settles at bbmult 64 on both cores here */
++	if (phy->radio_rev == 9 &&
++	    b43_current_band(dev->wl) == NL80211_BAND_2GHZ)
++		phy->n->txcal_bbmult = 0x4040;
++	return true;
++}
++
+ /* http://bcm-v4.sipsolutions.net/802.11/PHY/Init/N */
+ static int b43_phy_initn(struct b43_wldev *dev)
+ {
+@@ -6756,15 +6806,31 @@ static int b43_phy_initn(struct b43_wldev *dev)
+ 
+ 			if (nphy->antsel_type == 2)
+ 				b43_nphy_superswitch_init(dev, true);
+-			if (nphy->perical != 2) {
+-				b43_nphy_rssi_cal(dev);
++			/*
++			 * perical 2 is only meant to skip the second RSSI cal,
++			 * but it also skipped every TX/RX IQ (and PAPD) cal;
++			 * wl runs those on init.
++			 */
++			if (nphy->perical != 2 || modparam_nphy_initcal) {
++				if (nphy->perical != 2)
++					b43_nphy_rssi_cal(dev);
+ 				if (phy->rev >= 3) {
+ 					nphy->cal_orig_pwr_idx[0] =
+ 					    nphy->txpwrindex[0].index_internal;
+ 					nphy->cal_orig_pwr_idx[1] =
+ 					    nphy->txpwrindex[1].index_internal;
+-					/* TODO N PHY Pre Calibrate TX Gain */
+ 					target = b43_nphy_get_tx_gains(dev);
++					if (modparam_nphy_initcal)
++						b43_nphy_precal_tx_gains(dev, &target);
++					/*
++					 * The TX cal ladders are scaled by this;
++					 * left at 0 every ladder step has zero
++					 * amplitude. brcmsmac saves the current
++					 * bbmult here.
++					 */
++					if (!nphy->txcal_bbmult)
++						nphy->txcal_bbmult = b43_ntab_read(dev,
++							B43_NTAB16(15, 87));
+ 				}
+ 				if (!b43_nphy_cal_tx_iq_lo(dev, target, true, false))
+ 					if (b43_nphy_cal_rx_iq(dev, target, 2, 0) == 0)
+-- 
+2.43.0
+

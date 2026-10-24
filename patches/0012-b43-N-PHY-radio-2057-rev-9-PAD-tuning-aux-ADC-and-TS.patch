@@ -1,0 +1,123 @@
+From 5062cbdbb991b2c25f8d403881da0944d6fb8461 Mon Sep 17 00:00:00 2001
+From: Luca Casati <luk00casati@gmail.com>
+Date: Sat, 24 Oct 2026 23:16:58 +0200
+Subject: [PATCH 12/14] b43: N-PHY: radio 2057 rev 9 PAD tuning, aux ADC and
+ TSSI gain
+
+Fill in radio rev 9 (BCM43228) settings b43 left as TODO, taken from
+an mmiotrace of wl 6.30.223.271:
+
+- PAD2G_TUNE_PUS per channel and core. Without it the PA driver is
+  mistuned; PAPD's loopback barely saw the PA.
+- Aux ADC (RSSI/TSSI) vmid and gain tables. Without them NB RSSI read
+  ~8 codes low and idle TSSI sat at -32, so hwpctl worked from a bogus
+  TSSI. RSSI cal results and idle TSSI now match wl.
+- TSSIG 2, as wl uses.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/net/wireless/broadcom/b43/phy_n.c | 57 +++++++++++++++++++++--
+ 1 file changed, 52 insertions(+), 5 deletions(-)
+
+diff --git a/drivers/net/wireless/broadcom/b43/phy_n.c b/drivers/net/wireless/broadcom/b43/phy_n.c
+index c621c5923..f8818e67a 100644
+--- a/drivers/net/wireless/broadcom/b43/phy_n.c
++++ b/drivers/net/wireless/broadcom/b43/phy_n.c
+@@ -787,16 +787,38 @@ static void b43_radio_2057_setup(struct b43_wldev *dev,
+ 	if (b43_current_band(dev->wl) == NL80211_BAND_2GHZ) {
+ 		u16 txmix2g_tune_boost_pu = 0;
+ 		u16 pad2g_tune_pus = 0;
++		u16 pad2g_tune_pus_c1 = 0;
+ 
+ 		if (b43_nphy_ipa(dev)) {
+ 			switch (phy->radio_rev) {
+ 			case 9:
+ 				txmix2g_tune_boost_pu = 0x0041;
+-				/* TODO */
++				/*
++				 * PAD tuning per channel and core, from an
++				 * mmiotrace of wl 6.30.223.271 (channels 1-13;
++				 * 14 is assumed to follow 13).
++				 */
++				if (tabent_r7->freq <= 2422) {
++					pad2g_tune_pus = 0x43;
++					pad2g_tune_pus_c1 = 0x53;
++				} else if (tabent_r7->freq <= 2437) {
++					pad2g_tune_pus = 0x43;
++					pad2g_tune_pus_c1 = 0x43;
++				} else if (tabent_r7->freq <= 2462) {
++					pad2g_tune_pus = 0x33;
++					pad2g_tune_pus_c1 = 0x43;
++				} else if (tabent_r7->freq <= 2467) {
++					pad2g_tune_pus = 0x23;
++					pad2g_tune_pus_c1 = 0x43;
++				} else {
++					pad2g_tune_pus = 0x23;
++					pad2g_tune_pus_c1 = 0x33;
++				}
+ 				break;
+ 			case 14:
+ 				txmix2g_tune_boost_pu = 0x21;
+ 				pad2g_tune_pus = 0x23;
++				pad2g_tune_pus_c1 = 0x23;
+ 				break;
+ 			}
+ 		}
+@@ -810,9 +832,9 @@ static void b43_radio_2057_setup(struct b43_wldev *dev,
+ 		if (txmix2g_tune_boost_pu)
+ 			b43_radio_write(dev, R2057_TXMIX2G_TUNE_BOOST_PU_CORE1,
+ 					txmix2g_tune_boost_pu);
+-		if (pad2g_tune_pus)
++		if (pad2g_tune_pus_c1)
+ 			b43_radio_write(dev, R2057_PAD2G_TUNE_PUS_CORE1,
+-					pad2g_tune_pus);
++					pad2g_tune_pus_c1);
+ 	}
+ 
+ 	usleep_range(50, 100);
+@@ -3155,7 +3177,26 @@ static void b43_nphy_workarounds_rev7plus(struct b43_wldev *dev)
+ 
+ 	b43_nphy_gain_ctl_workarounds(dev);
+ 
+-	/* TODO
++	/*
++	 * Aux ADC (RSSI/TSSI) midpoints and gains. Without them the ADC
++	 * runs at its reset midpoint: NB RSSI read ~8 codes low and idle
++	 * TSSI sat at the bottom of the range (-32), so hwpctl worked from
++	 * a bogus TSSI. Values from an mmiotrace of wl 6.30.223.271 on
++	 * radio 2057 rev 9; entry 3 is the TSSI input.
++	 */
++	if (phy->radio_rev == 9) {
++		bool ghz2 = b43_current_band(dev->wl) == NL80211_BAND_2GHZ;
++		u16 vmid0[] = { 0x86, 0xb4, 0xb4, ghz2 ? 0x88 : 0x68 };
++		u16 vmid1[] = { 0x90, 0xb4, 0xb4, ghz2 ? 0x8c : 0x6c };
++		u16 gain[] = { 2, 2, 2, ghz2 ? 0 : 4 };
++
++		b43_ntab_write_bulk(dev, B43_NTAB16(8, 0x08), 4, vmid0);
++		b43_ntab_write_bulk(dev, B43_NTAB16(8, 0x18), 4, vmid1);
++		b43_ntab_write_bulk(dev, B43_NTAB16(8, 0x0C), 4, gain);
++		b43_ntab_write_bulk(dev, B43_NTAB16(8, 0x1C), 4, gain);
++	}
++
++	/* TODO other radio revisions
+ 	b43_ntab_write_bulk(dev, B43_NTAB16(8, 0x08), 4,
+ 			    aux_adc_vmid_rev7_core0);
+ 	b43_ntab_write_bulk(dev, B43_NTAB16(8, 0x18), 4,
+@@ -3893,7 +3934,13 @@ static void b43_nphy_ipa_internal_tssi_setup(struct b43_wldev *dev)
+ 				b43_radio_write(dev, r + 0x9, 0xE);
+ 				if (phy->rev != 5)
+ 					b43_radio_write(dev, r + 0xA, 0);
+-				if (phy->rev != 7)
++				/*
++				 * TSSIG: wl 6.30 uses 2 on radio rev 9, the
++				 * setting the SPROM PA parameters assume.
++				 */
++				if (phy->radio_rev == 9)
++					b43_radio_write(dev, r + 0xB, 2);
++				else if (phy->rev != 7)
+ 					b43_radio_write(dev, r + 0xB, 1);
+ 				else
+ 					b43_radio_write(dev, r + 0xB, 0x31);
+-- 
+2.43.0
+

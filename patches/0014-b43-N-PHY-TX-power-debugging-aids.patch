@@ -1,0 +1,53 @@
+From eac1402179245fa15a44963545f2f98253767b67 Mon Sep 17 00:00:00 2001
+From: Luca Casati <luk00casati@gmail.com>
+Date: Sat, 24 Oct 2026 23:16:58 +0200
+Subject: [PATCH 14/14] b43: N-PHY: TX power debugging aids
+
+Add nphy_tpwr to cap the hwpctl target (quarter dBm) for experiments,
+and dump the per-rate power limits when nphy_txpwrdbg is set.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/net/wireless/broadcom/b43/phy_n.c | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/drivers/net/wireless/broadcom/b43/phy_n.c b/drivers/net/wireless/broadcom/b43/phy_n.c
+index 4b697c5ac..0d8673c52 100644
+--- a/drivers/net/wireless/broadcom/b43/phy_n.c
++++ b/drivers/net/wireless/broadcom/b43/phy_n.c
+@@ -41,6 +41,10 @@ MODULE_PARM_DESC(nphy_papd, "N-PHY PAPD for internal PA: 0=off, 1=on uncalibrate
+ static int modparam_nphy_initcal;
+ module_param_named(nphy_initcal, modparam_nphy_initcal, int, 0444);
+ MODULE_PARM_DESC(nphy_initcal, "N-PHY: run TX IQ/LO and RX IQ calibration (and PAPD with nphy_papd=2) on init; perical=2 skips them otherwise");
++
++static int modparam_nphy_tpwr;
++module_param_named(nphy_tpwr, modparam_nphy_tpwr, int, 0444);
++MODULE_PARM_DESC(nphy_tpwr, "N-PHY hwpctl target power cap in quarter dBm (0: no cap)");
+ #include "main.h"
+ #include "ppr.h"
+ 
+@@ -4285,6 +4289,10 @@ static void b43_nphy_tx_power_ctl_setup(struct b43_wldev *dev)
+ 		      idle[0] << B43_NPHY_TXPCTL_ITSSI_0_SHIFT |
+ 		      idle[1] << B43_NPHY_TXPCTL_ITSSI_1_SHIFT |
+ 		      B43_NPHY_TXPCTL_ITSSI_BINF);
++	if (modparam_nphy_tpwr > 0) {
++		target[0] = min_t(int, target[0], modparam_nphy_tpwr);
++		target[1] = min_t(int, target[1], modparam_nphy_tpwr);
++	}
+ 	b43_phy_write(dev, B43_NPHY_TXPCTL_TPWR,
+ 		      target[0] << B43_NPHY_TXPCTL_TPWR_0_SHIFT |
+ 		      target[1] << B43_NPHY_TXPCTL_TPWR_1_SHIFT);
+@@ -6055,6 +6063,10 @@ static enum b43_txpwr_result b43_nphy_op_recalc_txpower(struct b43_wldev *dev,
+ 	if (b43_debug(dev, B43_DBG_XMITPOWER))
+ 		b43dbg(dev->wl, "Calculated TX power: " Q52_FMT "\n",
+ 		       Q52_ARG(b43_ppr_get_max(dev, ppr)));
++	if (modparam_nphy_txpwrdbg)
++		b43info(dev->wl, "ppr qdBm: cck %*ph ofdm %*ph mcs20 %*ph mcs20cdd %*ph\n",
++			4, ppr->rates.cck, 8, ppr->rates.ofdm,
++			8, ppr->rates.mcs_20, 8, ppr->rates.mcs_20_cdd);
+ 
+ 	/* TODO: Enable this once we get gains working */
+ #if 0
+-- 
+2.43.0
+

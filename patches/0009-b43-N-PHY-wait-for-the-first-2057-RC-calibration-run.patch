@@ -1,0 +1,40 @@
+From dd3c06e42e3035ee19f3c2d6172dd3f892ace804 Mon Sep 17 00:00:00 2001
+From: Luca Casati <luk00casati@gmail.com>
+Date: Sat, 24 Oct 2026 23:16:57 +0200
+Subject: [PATCH 09/14] b43: N-PHY: wait for the first 2057 RC calibration run
+
+RCCAL_DONE_OSCCAP still shows the previous run's done bit for a few us
+after a start, and the first (SCAP) run polled it immediately, so the
+run was stopped before it happened. RCCAL_SCAP_VAL then read 0 (wl
+gets 8 on a BCM43228), which detunes the TX low-pass filter set up in
+the rev7+ workarounds. Sleep before polling, as the other two runs do.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/net/wireless/broadcom/b43/phy_n.c | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/net/wireless/broadcom/b43/phy_n.c b/drivers/net/wireless/broadcom/b43/phy_n.c
+index 7d78886d4..49d29ac09 100644
+--- a/drivers/net/wireless/broadcom/b43/phy_n.c
++++ b/drivers/net/wireless/broadcom/b43/phy_n.c
+@@ -958,8 +958,15 @@ static u16 b43_radio_2057_rccal(struct b43_wldev *dev)
+ 	}
+ 	b43_radio_write(dev, R2057_RCCAL_X1, 0x6E);
+ 
+-	/* Start, wait, stop */
++	/*
++	 * Start, wait, stop. DONE still holds the previous run's done bit
++	 * for a few us after the start, so give the cal time to clear it
++	 * before polling, as for the other two runs. Polling right away
++	 * stopped this (SCAP) cal before it ran and left RCCAL_SCAP_VAL at
++	 * 0, which detunes the TX LPF on radio rev 9.
++	 */
+ 	b43_radio_write(dev, R2057_RCCAL_START_R1_Q1_P1, 0x55);
++	usleep_range(70, 140);
+ 	if (!b43_radio_wait_value(dev, R2057_RCCAL_DONE_OSCCAP, 2, 2, 500,
+ 				  5000000))
+ 		b43dbg(dev->wl, "Radio 0x2057 rccal timeout\n");
+-- 
+2.43.0
+

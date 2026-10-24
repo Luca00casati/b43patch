@@ -1,0 +1,129 @@
+From 672028819590ee6d6232477dd2fc3d886785f1d4 Mon Sep 17 00:00:00 2001
+From: Luca Casati <luk00casati@gmail.com>
+Date: Sat, 24 Oct 2026 21:38:43 +0200
+Subject: [PATCH 07/14] b43: N-PHY PAPD: radio 2057 rev 9 settings from wl
+
+Take the radio rev 9 (BCM43228) PAPD differences from an mmiotrace of
+wl 6.30.223.271: coupler attenuation 0xF2 on both cores, TR2G_CONFIG1
+cleared during the cal, the base TX gain from the gain code in use
+(table 7 at 0x110), gain search from address 55 with 0x2E5 = 0x10, and
+the rev7/8 PAD gain codes.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/net/wireless/broadcom/b43/phy_n.c | 43 ++++++++++++++++++++---
+ 1 file changed, 38 insertions(+), 5 deletions(-)
+
+diff --git a/drivers/net/wireless/broadcom/b43/phy_n.c b/drivers/net/wireless/broadcom/b43/phy_n.c
+index aaeec2e80..1ff95c736 100644
+--- a/drivers/net/wireless/broadcom/b43/phy_n.c
++++ b/drivers/net/wireless/broadcom/b43/phy_n.c
+@@ -6100,8 +6100,12 @@ static void b43_nphy_superswitch_init(struct b43_wldev *dev, bool init)
+  * PAPD calibration (rev7+, internal PA)
+  *
+  * Ported from brcmsmac's wlc_phy_a4() and helpers. brcmsmac only knows
+- * radio 2057 revs 3-8; for later radio revisions we use the "all codes"
+- * PAD gain search and the RF power offset table as the PAD gain delta.
++ * radio 2057 revs 3-8. The radio rev 9 (BCM43228) differences were taken
++ * from an mmiotrace of wl 6.30.223.271: rev7/8 PAD gain codes, gain search
++ * from address 55, 0x2E5 = 0x10 while searching, coupler attenuation 0xF2,
++ * TR2G_CONFIG1 cleared during the cal, and the RF power offset table as the
++ * PAD gain delta (wl's EPS_TABLE_ADJ values match it exactly). Later radio
++ * revisions fall back to the "all codes" search.
+  **************************************************/
+ 
+ #define B43_NPHY_PAPD_TBL_EPS(core)	((core) ? 33 : 31)
+@@ -6119,6 +6123,7 @@ struct b43_nphy_papd_state {
+ 	u16 afectrl[2];
+ 	u16 afeoverride[2];
+ 	u16 atten[2];
++	u16 tr2g_config1[2];
+ 	u16 bbmult;
+ };
+ 
+@@ -6261,6 +6266,8 @@ static void b43_nphy_papd_cal_setup(struct b43_wldev *dev,
+ 	b43_radio_write(dev, r + pwrup_reg, 0xc);
+ 	if (is_2g && phy->radio_rev == 5)
+ 		b43_radio_write(dev, r + attn_reg, core ? 0xf2 : 0xf7);
++	else if (is_2g && phy->radio_rev == 9)
++		b43_radio_write(dev, r + attn_reg, 0xf2);
+ 	else if (!is_2g && (phy->radio_rev == 7 || phy->radio_rev == 8))
+ 		b43_radio_write(dev, r + attn_reg, 0xf4);
+ 	else
+@@ -6268,6 +6275,15 @@ static void b43_nphy_papd_cal_setup(struct b43_wldev *dev,
+ 	b43_radio_write(dev, r_off + pwrup_reg, 0x0);
+ 	b43_radio_write(dev, r_off + attn_reg, 0xff);
+ 
++	if (is_2g && phy->radio_rev == 9) {
++		state->tr2g_config1[0] =
++			b43_radio_read(dev, R2057_TR2G_CONFIG1_CORE0_NU);
++		state->tr2g_config1[1] =
++			b43_radio_read(dev, R2057_TR2G_CONFIG1_CORE1_NU);
++		b43_radio_write(dev, R2057_TR2G_CONFIG1_CORE0_NU, 0);
++		b43_radio_write(dev, R2057_TR2G_CONFIG1_CORE1_NU, 0);
++	}
++
+ 	b43_nphy_tx_tone(dev, 4000, 181, false, false, false);
+ 
+ 	b43_phy_set(dev, core ? B43_NPHY_PAPD_EN1 : B43_NPHY_PAPD_EN0, 0x1);
+@@ -6303,6 +6319,13 @@ static void b43_nphy_papd_cal_cleanup(struct b43_wldev *dev,
+ 		}
+ 	}
+ 
++	if (is_2g && phy->radio_rev == 9) {
++		b43_radio_write(dev, R2057_TR2G_CONFIG1_CORE0_NU,
++				state->tr2g_config1[0]);
++		b43_radio_write(dev, R2057_TR2G_CONFIG1_CORE1_NU,
++				state->tr2g_config1[1]);
++	}
++
+ 	if (phy->radio_rev == 4 || phy->radio_rev == 6)
+ 		b43_nphy_rf_ctl_override_rev7(dev, 0x4, 1, 0x3, false, 0);
+ 	else
+@@ -6351,6 +6374,12 @@ static void b43_nphy_papd_cal_core(struct b43_wldev *dev, u16 pad_gain,
+ 	txgain = (gains.tx_lpf[core] << 15) | (gains.txgm[core] << 12) |
+ 		 (gains.pga[core] << 8) | (gains.pad[core] << 3) |
+ 		 gains.ipa[core];
++	/*
++	 * wl starts from the gain code the PHY is using right now, not the
++	 * gain table entry at the hwpctl base index.
++	 */
++	if (phy->radio_rev == 9)
++		txgain = b43_ntab_read(dev, B43_NTAB16(7, 0x110 + core));
+ 	if (is_2g)
+ 		txgain = (txgain & ~0xf8) | (pad_gain << 3);
+ 	else
+@@ -6377,7 +6406,7 @@ static void b43_nphy_papd_cal_core(struct b43_wldev *dev, u16 pad_gain,
+ 	yref = start;
+ 
+ 	if (mode == B43_NPHY_PAPD_CAL_GCTRL) {
+-		if (is_2g && phy->radio_rev == 5)
++		if (is_2g && (phy->radio_rev == 5 || phy->radio_rev == 9))
+ 			start = 55;
+ 		else if (is_2g && (phy->radio_rev == 7 || phy->radio_rev == 8))
+ 			start = 60;
+@@ -6396,7 +6425,10 @@ static void b43_nphy_papd_cal_core(struct b43_wldev *dev, u16 pad_gain,
+ 	b43_phy_maskset(dev, shifts, ~0x70, 11 << 4);
+ 	b43_phy_maskset(dev, shifts, ~0x700, 11 << 8);
+ 	b43_phy_maskset(dev, shifts, ~0x7, 0x3);
+-	b43_phy_write(dev, B43_PHY_N(0x2E5), 0x20);
++	if (phy->radio_rev == 9 && mode == B43_NPHY_PAPD_CAL_GCTRL)
++		b43_phy_write(dev, B43_PHY_N(0x2E5), 0x10);
++	else
++		b43_phy_write(dev, B43_PHY_N(0x2E5), 0x20);
+ 	b43_phy_maskset(dev, B43_NPHY_PAPD_CAL_YREFEPSILON, ~0x3f, yref);
+ 	b43_phy_maskset(dev, B43_NPHY_PAPD_CAL_RANGE, ~0x3f, start);
+ 	b43_phy_maskset(dev, B43_NPHY_PAPD_CAL_RANGE, ~0x3f00, end << 8);
+@@ -6435,7 +6467,8 @@ static u8 b43_nphy_papd_find_gain(struct b43_wldev *dev, u8 core)
+ 	if (phy->radio_rev == 5) {
+ 		codes = b43_nphy_papd_pad_gain_codes_2057rev5;
+ 		ncodes = ARRAY_SIZE(b43_nphy_papd_pad_gain_codes_2057rev5);
+-	} else if (phy->radio_rev == 7 || phy->radio_rev == 8) {
++	} else if (phy->radio_rev == 7 || phy->radio_rev == 8 ||
++		   phy->radio_rev == 9) {
+ 		codes = b43_nphy_papd_pad_gain_codes_2057rev7;
+ 		ncodes = ARRAY_SIZE(b43_nphy_papd_pad_gain_codes_2057rev7);
+ 	} else {
+-- 
+2.43.0
+

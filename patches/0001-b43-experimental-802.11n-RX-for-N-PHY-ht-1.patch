@@ -1,0 +1,201 @@
+From 3a6a885469c830c617129f785b08dce582b2df3b Mon Sep 17 00:00:00 2001
+From: Luca <luk00casati@gmail.com>
+Date: Sat, 24 Oct 2026 09:26:19 +0200
+Subject: [PATCH 01/14] b43: experimental 802.11n RX for N-PHY (ht=1)
+
+Decode HT PLCP (MCS, 40 MHz, short GI) for PHYST0 frame types 2/3,
+advertise HT20 MCS 0-15 behind the ht module parameter, send MCS rates
+picked by rate control at the matching legacy OFDM rate, and decline
+A-MPDU sessions.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/net/wireless/broadcom/b43/main.c | 56 ++++++++++++++++++++++++
+ drivers/net/wireless/broadcom/b43/xmit.c | 50 +++++++++++++++++++--
+ 2 files changed, 102 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/net/wireless/broadcom/b43/main.c b/drivers/net/wireless/broadcom/b43/main.c
+index b0e6aeb0b..ea21a77c2 100644
+--- a/drivers/net/wireless/broadcom/b43/main.c
++++ b/drivers/net/wireless/broadcom/b43/main.c
+@@ -97,6 +97,10 @@ static int modparam_qos = 1;
+ module_param_named(qos, modparam_qos, int, 0444);
+ MODULE_PARM_DESC(qos, "Enable QOS support (default on)");
+ 
++static int modparam_ht;
++module_param_named(ht, modparam_ht, int, 0444);
++MODULE_PARM_DESC(ht, "Advertise 802.11n RX on N-PHY devices (experimental, TX stays legacy)");
++
+ static int modparam_btcoex = 1;
+ module_param_named(btcoex, modparam_btcoex, int, 0444);
+ MODULE_PARM_DESC(btcoex, "Enable Bluetooth coexistence (default on)");
+@@ -5171,6 +5175,14 @@ static int b43_op_get_survey(struct ieee80211_hw *hw, int idx,
+ 	return 0;
+ }
+ 
++/* A-MPDU isn't implemented; decline sessions offered with HT enabled. */
++static int b43_op_ampdu_action(struct ieee80211_hw *hw,
++			       struct ieee80211_vif *vif,
++			       struct ieee80211_ampdu_params *params)
++{
++	return -EOPNOTSUPP;
++}
++
+ static const struct ieee80211_ops b43_hw_ops = {
+ 	.add_chanctx = ieee80211_emulate_add_chanctx,
+ 	.remove_chanctx = ieee80211_emulate_remove_chanctx,
+@@ -5197,6 +5209,7 @@ static const struct ieee80211_ops b43_hw_ops = {
+ 	.sw_scan_complete	= b43_op_sw_scan_complete_notifier,
+ 	.get_survey		= b43_op_get_survey,
+ 	.rfkill_poll		= b43_rfkill_poll,
++	.ampdu_action		= b43_op_ampdu_action,
+ };
+ 
+ /* Hard-reset the chip. Do not call this directly.
+@@ -5255,6 +5268,38 @@ static void b43_chip_reset(struct work_struct *work)
+ 	b43info(wl, "Controller restarted\n");
+ }
+ 
++/* Give a band its own copy with HT capabilities. Only HT RX is implemented,
++ * so advertise HT20 with long GI and no A-MPDU; TX rates are mapped back to
++ * legacy ones in b43_generate_txhdr().
++ */
++static int b43_setup_ht_band(struct b43_wldev *dev, enum nl80211_band band)
++{
++	struct wiphy *wiphy = dev->wl->hw->wiphy;
++	struct ieee80211_supported_band *sband;
++	struct ieee80211_sta_ht_cap *ht_cap;
++
++	if (!wiphy->bands[band])
++		return 0;
++
++	sband = devm_kmemdup(dev->dev->dev, wiphy->bands[band],
++			     sizeof(*sband), GFP_KERNEL);
++	if (!sband)
++		return -ENOMEM;
++
++	ht_cap = &sband->ht_cap;
++	memset(ht_cap, 0, sizeof(*ht_cap));
++	ht_cap->ht_supported = true;
++	ht_cap->ampdu_factor = IEEE80211_HT_MAX_AMPDU_8K;
++	ht_cap->ampdu_density = IEEE80211_HT_MPDU_DENSITY_NONE;
++	/* N-PHY cores have two RX chains: MCS 0-15 */
++	ht_cap->mcs.rx_mask[0] = 0xff;
++	ht_cap->mcs.rx_mask[1] = 0xff;
++	ht_cap->mcs.tx_params = IEEE80211_HT_MCS_TX_DEFINED;
++
++	wiphy->bands[band] = sband;
++	return 0;
++}
++
+ static int b43_setup_bands(struct b43_wldev *dev,
+ 			   bool have_2ghz_phy, bool have_5ghz_phy)
+ {
+@@ -5282,6 +5327,17 @@ static int b43_setup_bands(struct b43_wldev *dev,
+ 			hw->wiphy->bands[NL80211_BAND_5GHZ] = &b43_band_5GHz_aphy;
+ 	}
+ 
++	if (modparam_ht && dev->phy.type == B43_PHYTYPE_N) {
++		int err;
++
++		err = b43_setup_ht_band(dev, NL80211_BAND_2GHZ);
++		if (!err)
++			err = b43_setup_ht_band(dev, NL80211_BAND_5GHZ);
++		if (err)
++			return err;
++		b43info(dev->wl, "Experimental 802.11n RX enabled\n");
++	}
++
+ 	dev->phy.supports_2ghz = have_2ghz_phy;
+ 	dev->phy.supports_5ghz = have_5ghz_phy;
+ 
+diff --git a/drivers/net/wireless/broadcom/b43/xmit.c b/drivers/net/wireless/broadcom/b43/xmit.c
+index 7651b1bdb..8849cdf4a 100644
+--- a/drivers/net/wireless/broadcom/b43/xmit.c
++++ b/drivers/net/wireless/broadcom/b43/xmit.c
+@@ -232,6 +232,29 @@ static u8 b43_calc_fallback_rate(u8 bitrate, int gmode)
+ }
+ 
+ /* Generate a TX data header. */
++/* HT TX isn't implemented. Rate control may still pick MCS rates once HT
++ * RX is advertised, so send those at the legacy OFDM rate with the same
++ * modulation and coding. info->control.rates is left alone, so the TX
++ * status reported back matches what rate control asked for.
++ */
++static struct ieee80211_rate *
++b43_tx_legacy_rate(struct b43_wldev *dev, struct ieee80211_tx_info *info,
++		   const struct ieee80211_tx_rate *r)
++{
++	/* OFDM rate (index into the band's bitrates) for MCS 0-7 */
++	static const u8 mcs_to_ofdm[] = { 0, 2, 3, 4, 5, 6, 7, 7 };
++	struct ieee80211_supported_band *sband;
++	u8 ofdm_offset;
++
++	if (r->idx < 0)
++		return NULL;
++	sband = dev->wl->hw->wiphy->bands[info->band];
++	if (!(r->flags & IEEE80211_TX_RC_MCS))
++		return &sband->bitrates[r->idx];
++	ofdm_offset = info->band == NL80211_BAND_2GHZ ? 4 : 0;
++	return &sband->bitrates[ofdm_offset + mcs_to_ofdm[r->idx & 7]];
++}
++
+ int b43_generate_txhdr(struct b43_wldev *dev,
+ 		       u8 *_txhdr,
+ 		       struct sk_buff *skb_frag,
+@@ -261,10 +284,11 @@ int b43_generate_txhdr(struct b43_wldev *dev,
+ 
+ 	memset(txhdr, 0, sizeof(*txhdr));
+ 
+-	txrate = ieee80211_get_tx_rate(dev->wl->hw, info);
++	txrate = b43_tx_legacy_rate(dev, info, &info->control.rates[0]);
+ 	rate = txrate ? txrate->hw_value : B43_CCK_RATE_1MB;
+ 	rate_ofdm = b43_is_ofdm_rate(rate);
+-	fbrate = ieee80211_get_alt_retry_rate(dev->wl->hw, info, 0) ? : txrate;
++	fbrate = b43_tx_legacy_rate(dev, info, &info->control.rates[1]) ? :
++		 txrate;
+ 	rate_fb = fbrate->hw_value;
+ 	rate_fb_ofdm = b43_is_ofdm_rate(rate_fb);
+ 
+@@ -641,6 +665,7 @@ void b43_rx(struct b43_wldev *dev, struct sk_buff *skb, const void *_rxhdr)
+ 	u32 macstat;
+ 	u16 chanid;
+ 	int padding, rate_idx;
++	u16 ftype;
+ 
+ 	memset(&status, 0, sizeof(status));
+ 
+@@ -740,11 +765,28 @@ void b43_rx(struct b43_wldev *dev, struct sk_buff *skb, const void *_rxhdr)
+ 		break;
+ 	}
+ 
+-	if (phystat0 & B43_RX_PHYST0_OFDM)
++	ftype = phystat0 & B43_RX_PHYST0_FTYPE;
++	if (dev->phy.type == B43_PHYTYPE_N &&
++	    (ftype == B43_RX_PHYST0_PRE_N || ftype == B43_RX_PHYST0_STD_N)) {
++		/* HT-SIG: byte 0 is the MCS (bit 7: 40 MHz),
++		 * bit 7 of byte 3 is short GI.
++		 */
++		rate_idx = plcp->raw[0] & 0x7f;
++		if (rate_idx > 15) {
++			rate_idx = -1;
++		} else {
++			status.encoding = RX_ENC_HT;
++			if (plcp->raw[0] & 0x80)
++				status.bw = RATE_INFO_BW_40;
++			if (plcp->raw[3] & 0x80)
++				status.enc_flags |= RX_ENC_FLAG_SHORT_GI;
++		}
++	} else if (phystat0 & B43_RX_PHYST0_OFDM) {
+ 		rate_idx = b43_plcp_get_bitrate_idx_ofdm(plcp,
+ 					!!(chanstat & B43_RX_CHAN_5GHZ));
+-	else
++	} else {
+ 		rate_idx = b43_plcp_get_bitrate_idx_cck(plcp);
++	}
+ 	if (unlikely(rate_idx == -1)) {
+ 		/* PLCP seems to be corrupted.
+ 		 * Drop the frame, if we are not interested in corrupted frames. */
+-- 
+2.43.0
+

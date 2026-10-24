@@ -1,0 +1,122 @@
+From 92237d839474c494a8d70ee22b82d6978c98ccc3 Mon Sep 17 00:00:00 2001
+From: Luca Casati <luk00casati@gmail.com>
+Date: Sat, 24 Oct 2026 10:49:21 +0200
+Subject: [PATCH 02/14] b43: N-PHY rev7+ TX fixes and diagnostics
+
+Disable PAPD on internal-PA N-PHY rev7+ by default: b43 never calibrates
+PAPD for these revisions, and the uncalibrated table distorts 64-QAM
+(BCM43228: 54M success 33% -> 83%). Add nphy_papd, nphy_txpwrctrl,
+nphy_txidx and nphy_txpwrdbg module parameters for testing.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/net/wireless/broadcom/b43/phy_n.c | 56 ++++++++++++++++++++++-
+ 1 file changed, 55 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/net/wireless/broadcom/b43/phy_n.c b/drivers/net/wireless/broadcom/b43/phy_n.c
+index bbc30cbad..67a1e918c 100644
+--- a/drivers/net/wireless/broadcom/b43/phy_n.c
++++ b/drivers/net/wireless/broadcom/b43/phy_n.c
+@@ -21,6 +21,22 @@
+ #include "radio_2055.h"
+ #include "radio_2056.h"
+ #include "radio_2057.h"
++
++static int modparam_nphy_txpwrctrl = 1;
++module_param_named(nphy_txpwrctrl, modparam_nphy_txpwrctrl, int, 0444);
++MODULE_PARM_DESC(nphy_txpwrctrl, "N-PHY hardware TX power control (default on)");
++
++static int modparam_nphy_txpwrdbg;
++module_param_named(nphy_txpwrdbg, modparam_nphy_txpwrdbg, int, 0644);
++MODULE_PARM_DESC(nphy_txpwrdbg, "Log N-PHY TX power control state");
++
++static int modparam_nphy_txidx = -1;
++module_param_named(nphy_txidx, modparam_nphy_txidx, int, 0444);
++MODULE_PARM_DESC(nphy_txidx, "N-PHY rev7+ fixed TX gain index when power control is off (-1: default 30)");
++
++static int modparam_nphy_papd = -1;
++module_param_named(nphy_papd, modparam_nphy_papd, int, 0444);
++MODULE_PARM_DESC(nphy_papd, "N-PHY PAPD for internal PA: 0=off, 1=on, -1=auto (off on rev7+, which lacks PAPD calibration)");
+ #include "main.h"
+ #include "ppr.h"
+ 
+@@ -3748,6 +3764,8 @@ static void b43_nphy_tx_power_fix(struct b43_wldev *dev)
+ 	/* TODO: rev19+ */
+ 	if (dev->phy.rev >= 7) {
+ 		txpi[0] = txpi[1] = 30;
++		if (modparam_nphy_txidx >= 0 && modparam_nphy_txidx < 128)
++			txpi[0] = txpi[1] = modparam_nphy_txidx;
+ 	} else if (dev->phy.rev >= 3) {
+ 		txpi[0] = 40;
+ 		txpi[1] = 40;
+@@ -4207,10 +4225,36 @@ static void b43_nphy_tx_power_ctl_setup(struct b43_wldev *dev)
+ 	b43_ntab_write_bulk(dev, B43_NTAB16(26, 64), 84, nphy->adj_pwr_tbl);
+ 	b43_ntab_write_bulk(dev, B43_NTAB16(27, 64), 84, nphy->adj_pwr_tbl);
+ 
++	if (modparam_nphy_txpwrdbg)
++		for (c = 0; c < 2; c++)
++			b43info(dev->wl,
++				"txpwr core %d: idle_tssi %u target %d a1 %d b0 %d b1 %d "
++				"(ipa2g %d ipa5g %d extpa_gain 2g %u tssipos 2g %u sprom rev %u hwpctl %d)\n",
++				c, idle[c], target[c], a1[c], b0[c], b1[c],
++				nphy->ipa2g_on, nphy->ipa5g_on,
++				sprom->fem.ghz2.extpa_gain,
++				sprom->fem.ghz2.tssipos, sprom->revision,
++				nphy->txpwrctrl);
++
+ 	if (nphy->hang_avoid)
+ 		b43_nphy_stay_in_carrier_search(dev, false);
+ }
+ 
++static void b43_nphy_op_pwork_15sec(struct b43_wldev *dev)
++{
++	u16 stat0, stat1;
++
++	if (!modparam_nphy_txpwrdbg)
++		return;
++
++	stat0 = b43_phy_read(dev, B43_NPHY_C1_TXPCTL_STAT);
++	stat1 = b43_phy_read(dev, B43_NPHY_C2_TXPCTL_STAT);
++	b43info(dev->wl, "txpwr index core0 %u core1 %u (stat %04x %04x) hwpctl %d\n",
++		(stat0 & B43_NPHY_TXPCTL_STAT_BIDX) >> B43_NPHY_TXPCTL_STAT_BIDX_SHIFT,
++		(stat1 & B43_NPHY_TXPCTL_STAT_BIDX) >> B43_NPHY_TXPCTL_STAT_BIDX_SHIFT,
++		stat0, stat1, dev->phy.n->txpwrctrl);
++}
++
+ static void b43_nphy_tx_gain_table_upload(struct b43_wldev *dev)
+ {
+ 	struct b43_phy *phy = &dev->phy;
+@@ -6074,7 +6118,14 @@ static int b43_phy_initn(struct b43_wldev *dev)
+ 		b43_phy_write(dev, B43_NPHY_DUP40_BL, 0x9A4);
+ 	}
+ 
+-	if (b43_nphy_ipa(dev)) {
++	if (b43_nphy_ipa(dev) && (modparam_nphy_papd == 0 ||
++				  (modparam_nphy_papd < 0 && phy->rev >= 7))) {
++		/* PAPD calibration is not implemented for rev7+, and running
++		 * with an uncalibrated PAPD table distorts 64-QAM. */
++		b43_phy_mask(dev, B43_NPHY_PAPD_EN0, ~0x1);
++		b43_phy_mask(dev, B43_NPHY_PAPD_EN1, ~0x1);
++		b43_nphy_int_pa_set_tx_dig_filters(dev);
++	} else if (b43_nphy_ipa(dev)) {
+ 		b43_phy_set(dev, B43_NPHY_PAPD_EN0, 0x1);
+ 		b43_phy_maskset(dev, B43_NPHY_EPS_TABLE_ADJ0, 0x007F,
+ 				nphy->papd_epsilon_offset[0] << 7);
+@@ -6472,6 +6523,8 @@ static void b43_nphy_op_prepare_structs(struct b43_wldev *dev)
+ 			nphy->pwg_gain_5ghz = true;
+ 		}
+ 	}
++	if (!modparam_nphy_txpwrctrl)
++		nphy->txpwrctrl = false;
+ 
+ 	if (dev->phy.rev >= 3) {
+ 		nphy->ipa2g_on = sprom->fem.ghz2.extpa_gain == 2;
+@@ -6661,4 +6714,5 @@ const struct b43_phy_operations b43_phyops_n = {
+ 	.switch_channel		= b43_nphy_op_switch_channel,
+ 	.get_default_chan	= b43_nphy_op_get_default_chan,
+ 	.recalc_txpower		= b43_nphy_op_recalc_txpower,
++	.pwork_15sec		= b43_nphy_op_pwork_15sec,
+ };
+-- 
+2.43.0
+

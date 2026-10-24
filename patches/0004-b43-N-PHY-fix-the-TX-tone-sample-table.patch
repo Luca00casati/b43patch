@@ -1,0 +1,60 @@
+From 2c84c2c334a7db0748cff966accdeb6dd3c8989d Mon Sep 17 00:00:00 2001
+From: Luca Casati <luk00casati@gmail.com>
+Date: Sat, 24 Oct 2026 21:38:42 +0200
+Subject: [PATCH 04/14] b43: N-PHY: fix the TX tone sample table
+
+b43_nphy_load_samples() masked with (0x3FF << 10) instead of shifting the
+masked I value, and b43_nphy_gen_load_samples() fed cordic_calc_iq() a
+16.16 fixed-point angle (CORDIC_FIXED() of a value already shifted by 16)
+held in a u16, while the function takes whole degrees. Together the
+sample table ended up all zeros, so every calibration that plays a tone
+(TX IQ/LO, RX IQ, PAPD) ran without a signal.
+
+Compute the rotation in whole degrees as brcmsmac does and fix the
+precedence.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/net/wireless/broadcom/b43/phy_n.c | 9 +++++----
+ 1 file changed, 5 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/net/wireless/broadcom/b43/phy_n.c b/drivers/net/wireless/broadcom/b43/phy_n.c
+index 37d6a0be8..3533f825a 100644
+--- a/drivers/net/wireless/broadcom/b43/phy_n.c
++++ b/drivers/net/wireless/broadcom/b43/phy_n.c
+@@ -1531,7 +1531,7 @@ static int b43_nphy_load_samples(struct b43_wldev *dev,
+ 		b43_nphy_stay_in_carrier_search(dev, 1);
+ 
+ 	for (i = 0; i < len; i++) {
+-		data[i] = (samples[i].i & 0x3FF << 10);
++		data[i] = (samples[i].i & 0x3FF) << 10;
+ 		data[i] |= samples[i].q & 0x3FF;
+ 	}
+ 	b43_ntab_write_bulk(dev, B43_NTAB32(17, 0), len, data);
+@@ -1547,7 +1547,8 @@ static u16 b43_nphy_gen_load_samples(struct b43_wldev *dev, u32 freq, u16 max,
+ 					bool test)
+ {
+ 	int i;
+-	u16 bw, len, rot, angle;
++	u16 bw, len;
++	s32 rot, angle;		/* whole degrees, as cordic_calc_iq() wants */
+ 	struct cordic_iq *samples;
+ 
+ 	bw = b43_is_40mhz(dev) ? 40 : 20;
+@@ -1570,11 +1571,11 @@ static u16 b43_nphy_gen_load_samples(struct b43_wldev *dev, u32 freq, u16 max,
+ 		b43err(dev->wl, "allocation for samples generation failed\n");
+ 		return 0;
+ 	}
+-	rot = (((freq * 36) / bw) << 16) / 100;
++	rot = ((freq * 36) / bw) / 100;
+ 	angle = 0;
+ 
+ 	for (i = 0; i < len; i++) {
+-		samples[i] = cordic_calc_iq(CORDIC_FIXED(angle));
++		samples[i] = cordic_calc_iq(angle);
+ 		angle += rot;
+ 		samples[i].q = CORDIC_FLOAT(samples[i].q * max);
+ 		samples[i].i = CORDIC_FLOAT(samples[i].i * max);
+-- 
+2.43.0
+

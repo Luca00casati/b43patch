@@ -1,0 +1,220 @@
+#!/bin/sh
+# b43-lab: root helper for the BCM43228 b43/wl experiments, so tests can run
+# unattended through a single NOPASSWD sudoers rule.
+#
+#   b43-lab status                       driver, link, kernel taint
+#   b43-lab wl                           switch to wl
+#   b43-lab b43 KO [modparam=val ...]    switch to the b43 module KO
+#   b43-lab bench [LABEL]                benchmark the current driver
+#   b43-lab test OUT KO "params" ...     b43 + bench once per params set
+#                                        ("" = defaults), results to OUT
+#   b43-lab trace PREFIX KO [params]     mmiotrace of b43 load+connect+ping
+#   b43-lab trace-wl PREFIX              mmiotrace of wl load+connect+ping
+#
+# Output paths must be under /home/luca/dev and end up owned by luca.
+# Installed copy: /usr/local/sbin/b43-lab (root:root 0755). Edit the copy
+# in /home/luca/dev/b43-lab and reinstall; the sudoers rule only covers the
+# installed path.
+#
+# Every run sets kernel.panic=10, so a crash reboots by itself and the oops
+# lands in pstore (/var/lib/systemd/pstore) instead of a hung laptop.
+set -u
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+USER_NAME=luca
+DEV_DIR=/home/luca/dev
+BENCH=$DEV_DIR/wifi-bench.sh
+SSID="YOUR_SSID"
+BSSID=00:00:00:00:00:00
+T=/sys/kernel/tracing
+
+die() { echo "b43-lab: $*" >&2; exit 1; }
+
+[ "$(id -u)" = 0 ] || die "run via sudo"
+exec 9>/run/b43-lab.lock
+flock -n 9 || die "another b43-lab run is active"
+sysctl -q kernel.panic=10
+
+# Resolve an output path and refuse anything outside DEV_DIR.
+outpath() {
+	d=$(realpath -m -- "$1") || die "bad path $1"
+	case "$d" in
+	"$DEV_DIR"/*) echo "$d" ;;
+	*) die "$1: outputs must be under $DEV_DIR" ;;
+	esac
+}
+
+check_ko() {
+	case "$1" in
+	*.ko) ;;
+	*) die "$1: not a .ko file" ;;
+	esac
+	[ -f "$1" ] || die "$1: no such file"
+	modinfo -F name "$1" 2>/dev/null | grep -qx b43 || die "$1: not a b43 module"
+}
+
+check_params() {
+	for p in "$@"; do
+		case "$p" in
+		*=*) ;;
+		*) die "module parameter '$p' is not name=value" ;;
+		esac
+	done
+}
+
+wifidev() { iw dev | awk '/Interface/ {print $2; exit}'; }
+
+unload_all() {
+	rmmod b43 2>/dev/null
+	rmmod wl 2>/dev/null
+	rmmod bcma 2>/dev/null
+	sleep 2
+}
+
+# Wait for an interface, then make sure we're on the usual 2.4 GHz router
+# (the card likes to roam to a weaker one).
+connect() {
+	wait=${1:-25}
+	sleep "$wait"
+	dev=$(wifidev)
+	[ -n "$dev" ] || { echo "no wireless interface"; return 1; }
+	if ! iw dev "$dev" link | grep -qi "$BSSID"; then
+		nmcli device wifi connect "$SSID" bssid "$BSSID" ifname "$dev" >/dev/null 2>&1 ||
+			nmcli device wifi connect "$SSID" ifname "$dev" >/dev/null 2>&1
+		sleep 10
+	fi
+	iw dev "$dev" link | grep -E "Connected|signal"
+}
+
+load_b43() {
+	ko=$1; shift
+	check_ko "$ko"
+	check_params "$@"
+	unload_all
+	modprobe -a cfg80211 mac80211 cordic bcma ssb || die "modprobe deps failed"
+	insmod "$ko" "$@" || die "insmod $ko failed"
+}
+
+load_wl() {
+	unload_all
+	modprobe wl || die "modprobe wl failed"
+	echo "note: wl after b43 without a reboot may fail to scan (-22)"
+}
+
+bench() {
+	dev=$(wifidev)
+	[ -n "$dev" ] || { echo "no wireless interface"; return 1; }
+	echo "===== [${1:-$(lsmod | awk '$1 == "b43" || $1 == "wl" {print $1; exit}')}]"
+	iw dev "$dev" link | grep -E "Connected|signal"
+	dmesg | grep -iE "papd|txpwr index" | tail -4
+	# the benchmark is user-editable, so it never runs as root
+	runuser -u "$USER_NAME" -- "$BENCH" "$dev"
+	echo "-- per-rate (rate  avg(prob)  #success #attempts)"
+	cat /sys/kernel/debug/ieee80211/phy*/netdev:"$dev"/stations/*/rc_stats 2>/dev/null |
+		awk '/^(OFDM|HT)/ { for (i = 1; i <= NF; i++) if ($i ~ /^([0-9.]+M|MCS[0-9]+)$/) break; if ($NF == 0) next; print "  " $i, $(i+5) "%", $(NF-1), $NF }'
+}
+
+cpus_online() {
+	for c in /sys/devices/system/cpu/cpu[1-9]*; do
+		[ -f "$c/online" ] && echo "$1" > "$c/online"
+	done
+}
+
+# mmiotrace of whatever the given command loads. PCI config writes (bcma
+# core-window switches) go to a separate ftrace instance, PREFIX.cfg, since
+# they never showed up in the mmiotrace pipe.
+trace_run() {
+	prefix=$1; shift
+	[ -d "$T/events" ] || mount -t tracefs nodev "$T" || die "no tracefs"
+	unload_all
+	cpus_online 0
+	echo nop > $T/current_tracer
+	echo > $T/trace
+	echo 262144 > $T/buffer_size_kb
+	echo 'p:cfgw pci_bus_write_config_dword devfn=%si:u32 where=%dx:s32 val=%cx:x32' >> $T/kprobe_events
+	mkdir -p $T/instances/b43lab
+	echo > $T/instances/b43lab/trace
+	echo 1 > $T/instances/b43lab/events/kprobes/cfgw/enable
+	echo mmiotrace > $T/current_tracer
+	cat $T/trace_pipe > "$prefix.trace" &
+	reader=$!
+	sleep 1
+	echo "loading" > $T/trace_marker
+	"$@"
+	connect 60 | tee "$prefix.info"
+	echo "connected" > $T/trace_marker
+	ping -c 20 -i 0.2 -W 1 1.1.1.1 | tail -2 | tee -a "$prefix.info"
+	echo "traffic done" > $T/trace_marker
+
+	echo 0 > $T/instances/b43lab/events/kprobes/cfgw/enable
+	cat $T/instances/b43lab/trace > "$prefix.cfg"
+	sleep 2
+	# trace_pipe holds the tracer busy (EBUSY), so the reader goes first,
+	# and the CPUs only come back once mmiotrace is really off: kmmio is
+	# not SMP safe.
+	kill $reader 2>/dev/null
+	wait $reader 2>/dev/null
+	echo nop > $T/current_tracer
+	if [ "$(cat $T/current_tracer)" != nop ]; then
+		echo "mmiotrace still active: leaving CPUs 1..N offline" >&2
+		return 1
+	fi
+	rmdir $T/instances/b43lab 2>/dev/null
+	echo '-:cfgw' >> $T/kprobe_events
+	cpus_online 1
+	chown "$USER_NAME:$USER_NAME" "$prefix".*
+	echo "$prefix.trace: $(wc -l < "$prefix.trace") lines, lost: $(grep -c LOST "$prefix.trace")"
+	echo "$prefix.cfg: $(grep -c cfgw "$prefix.cfg") config writes"
+}
+
+cmd=${1:-}
+[ $# -gt 0 ] && shift
+case "$cmd" in
+status)
+	lsmod | awk '$1 ~ /^(b43|wl|bcma|ssb)$/ {print "module", $1}'
+	dev=$(wifidev)
+	[ -n "$dev" ] && iw dev "$dev" link | grep -E "Connected|signal"
+	echo "taint $(cat /proc/sys/kernel/tainted)"
+	;;
+wl)
+	load_wl
+	connect 20
+	;;
+b43)
+	[ $# -ge 1 ] || die "usage: b43 KO [params...]"
+	load_b43 "$@"
+	connect 25
+	;;
+bench)
+	bench "${1:-}"
+	;;
+test)
+	[ $# -ge 3 ] || die "usage: test OUT KO \"params\" ..."
+	out=$(outpath "$1"); ko=$2; shift 2
+	check_ko "$ko"
+	: > "$out"
+	chown "$USER_NAME:$USER_NAME" "$out"
+	for args in "$@"; do
+		# shellcheck disable=SC2086 # params are split on purpose
+		load_b43 "$ko" $args
+		connect 25 >/dev/null
+		bench "${args:-defaults}" 2>&1 | tee -a "$out"
+	done
+	echo "results in $out"
+	;;
+trace)
+	[ $# -ge 2 ] || die "usage: trace PREFIX KO [params...]"
+	prefix=$(outpath "$1"); ko=$2; shift 2
+	check_ko "$ko"
+	check_params "$@"
+	trace_run "$prefix" sh -c 'modprobe -a cfg80211 mac80211 cordic bcma ssb && insmod "$@"' sh "$ko" "$@"
+	;;
+trace-wl)
+	[ $# -eq 1 ] || die "usage: trace-wl PREFIX"
+	prefix=$(outpath "$1")
+	trace_run "$prefix" modprobe wl
+	;;
+*)
+	sed -n '2,15p' "$0"
+	exit 1
+	;;
+esac

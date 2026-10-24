@@ -1,0 +1,4 @@
+# Let luca run the b43/wl test helper as root without a password.
+# The helper loads kernel modules from /home/luca/dev, so this is
+# effectively root access for luca's account.
+luca ALL=(root) NOPASSWD: /usr/local/sbin/b43-lab

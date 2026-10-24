@@ -1,0 +1,545 @@
+From 1e0778a3d0257771d76175ebe9fad49b2b958531 Mon Sep 17 00:00:00 2001
+From: Luca Casati <luk00casati@gmail.com>
+Date: Sat, 24 Oct 2026 12:36:14 +0200
+Subject: [PATCH 03/14] b43: experimental PAPD calibration for N-PHY rev7+
+ (nphy_papd=2)
+
+Port brcmsmac's PAPD calibration (wlc_phy_a4 and helpers) for internal-PA
+N-PHY rev7+ on 2.4 GHz. brcmsmac only covers radio 2057 revs 3-8; later
+radio revisions use the full PAD gain search and the RF power offset
+table as the PAD gain delta, which still needs confirming against wl.
+
+Also fix the masks of RF control override 1 fields 0x100 and 0x200,
+which were swapped relative to brcmsmac.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/net/wireless/broadcom/b43/phy_n.c     | 482 +++++++++++++++++-
+ .../net/wireless/broadcom/b43/tables_nphy.c   |   4 +-
+ 2 files changed, 483 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/net/wireless/broadcom/b43/phy_n.c b/drivers/net/wireless/broadcom/b43/phy_n.c
+index 67a1e918c..37d6a0be8 100644
+--- a/drivers/net/wireless/broadcom/b43/phy_n.c
++++ b/drivers/net/wireless/broadcom/b43/phy_n.c
+@@ -36,7 +36,7 @@ MODULE_PARM_DESC(nphy_txidx, "N-PHY rev7+ fixed TX gain index when power control
+ 
+ static int modparam_nphy_papd = -1;
+ module_param_named(nphy_papd, modparam_nphy_papd, int, 0444);
+-MODULE_PARM_DESC(nphy_papd, "N-PHY PAPD for internal PA: 0=off, 1=on, -1=auto (off on rev7+, which lacks PAPD calibration)");
++MODULE_PARM_DESC(nphy_papd, "N-PHY PAPD for internal PA: 0=off, 1=on uncalibrated, 2=calibrate (rev7+, experimental), -1=auto (off on rev7+)");
+ #include "main.h"
+ #include "ppr.h"
+ 
+@@ -6016,6 +6016,484 @@ static void b43_nphy_superswitch_init(struct b43_wldev *dev, bool init)
+ 	}
+ }
+ 
++/**************************************************
++ * PAPD calibration (rev7+, internal PA)
++ *
++ * Ported from brcmsmac's wlc_phy_a4() and helpers. brcmsmac only knows
++ * radio 2057 revs 3-8; for later radio revisions we use the "all codes"
++ * PAD gain search and the RF power offset table as the PAD gain delta.
++ **************************************************/
++
++#define B43_NPHY_PAPD_TBL_EPS(core)	((core) ? 33 : 31)
++#define B43_NPHY_PAPD_TBL_SCAL(core)	((core) ? 34 : 32)
++#define B43_NPHY_PAPD_EPS_TBL_SIZE	64
++#define B43_NPHY_PAPD_CAL_RUN		B43_PHY_N(0x2BE)
++#define B43_NPHY_PAPD_CAL_RANGE		B43_PHY_N(0x29F)
++
++enum b43_nphy_papd_cal_mode {
++	B43_NPHY_PAPD_CAL_FULL,
++	B43_NPHY_PAPD_CAL_GCTRL,
++};
++
++struct b43_nphy_papd_state {
++	u16 afectrl[2];
++	u16 afeoverride[2];
++	u16 atten[2];
++	u16 bbmult;
++};
++
++static const u32 b43_nphy_papd_scaltbl[] = {
++	0x0ae2002f, 0x0a3b0032, 0x09a70035, 0x09220038,
++	0x0887003c, 0x081f003f, 0x07a20043, 0x07340047,
++	0x06d2004b, 0x067a004f, 0x06170054, 0x05bf0059,
++	0x0571005e, 0x051e0064, 0x04d3006a, 0x04910070,
++	0x044c0077, 0x040f007e, 0x03d90085, 0x03a1008d,
++	0x036f0095, 0x033d009e, 0x030b00a8, 0x02e000b2,
++	0x02b900bc, 0x029200c7, 0x026d00d3, 0x024900e0,
++	0x022900ed, 0x020a00fb, 0x01ec010a, 0x01d0011a,
++	0x01b7012a, 0x019e013c, 0x0187014f, 0x01720162,
++	0x015d0177, 0x0149018e, 0x013701a5, 0x012601be,
++	0x011501d9, 0x010501f5, 0x00f70212, 0x00e90232,
++	0x00dc0253, 0x00d00276, 0x00c4029c, 0x00b902c3,
++	0x00af02ed, 0x00a5031a, 0x009c0349, 0x0093037a,
++	0x008b03af, 0x008303e7, 0x007c0422, 0x00750461,
++	0x006e04a3, 0x006804ea, 0x00620534, 0x005d0583,
++	0x005805d7, 0x0053062f, 0x004e068d, 0x004a06f1,
++};
++
++static const s16 b43_nphy_papd_padgain_dlt_2g_2057rev3n4[] = {
++	-159, -113, -86, -72, -62, -54, -48, -43,
++	-39, -35, -31, -28, -25, -23, -20, -18,
++	-17, -15, -13, -11, -10, -8, -7, -6,
++	-5, -4, -3, -3, -2, -1, -1, 0,
++};
++
++static const s16 b43_nphy_papd_padgain_dlt_2g_2057rev5[] = {
++	-109, -109, -82, -68, -58, -50, -44, -39,
++	-35, -31, -28, -26, -23, -21, -19, -17,
++	-16, -14, -13, -11, -10, -9, -8, -7,
++	-5, -5, -4, -3, -2, -1, -1, 0,
++};
++
++static const s16 b43_nphy_papd_padgain_dlt_2g_2057rev7[] = {
++	-122, -122, -95, -80, -69, -61, -54, -49,
++	-43, -39, -35, -32, -28, -26, -23, -21,
++	-18, -16, -15, -13, -11, -10, -8, -7,
++	-6, -5, -4, -3, -2, -1, -1, 0,
++};
++
++static const u8 b43_nphy_papd_pad_gain_codes_2057rev5[] = {
++	20, 19, 18, 17, 16, 15, 14, 13, 12, 11,
++	10, 9, 8, 7, 6, 5, 4, 3, 2, 1,
++};
++
++static const u8 b43_nphy_papd_pad_gain_codes_2057rev7[] = {
++	15, 14, 13, 12, 11, 10, 9, 8, 7, 6,
++	5, 4, 3, 2, 1,
++};
++
++static const u8 b43_nphy_papd_pad_all_gain_codes_2057[] = {
++	31, 30, 29, 28, 27, 26, 25, 24, 23, 22,
++	21, 20, 19, 18, 17, 16, 15, 14, 13, 12,
++	11, 10, 9, 8, 7, 6, 5, 4, 3, 2,
++	1, 0,
++};
++
++static void b43_nphy_papd_decode_epsilon(u32 eps, s32 *re, s32 *im)
++{
++	*im = eps >> 13;
++	if (*im > 0xfff)
++		*im -= 0x2000;
++	*re = eps & 0x1fff;
++	if (*re > 0xfff)
++		*re -= 0x2000;
++}
++
++static u16 b43_nphy_ipa_get_bbmult(struct b43_wldev *dev)
++{
++	return b43_ntab_read(dev, B43_NTAB16(15, 87));
++}
++
++static void b43_nphy_ipa_set_bbmult(struct b43_wldev *dev, u8 m0, u8 m1)
++{
++	u16 m0m1 = (m0 << 8) | m1;
++
++	b43_ntab_write(dev, B43_NTAB16(15, 87), m0m1);
++	b43_ntab_write(dev, B43_NTAB16(15, 95), m0m1);
++}
++
++static void b43_nphy_papd_cal_setup(struct b43_wldev *dev,
++				    struct b43_nphy_papd_state *state, u8 core)
++{
++	struct b43_phy *phy = &dev->phy;
++	bool is_2g = b43_current_band(dev->wl) == NL80211_BAND_2GHZ;
++	u8 off_core = core ^ 1;
++	u16 r = core ? 0x20 : 0, r_off = off_core ? 0x20 : 0;
++	u16 afectl[2] = { B43_NPHY_AFECTL_C1, B43_NPHY_AFECTL_C2 };
++	u16 afeover[2] = { B43_NPHY_AFECTL_OVER1, B43_NPHY_AFECTL_OVER };
++	u16 mixgain = 0, attn_reg, pwrup_reg;
++
++	b43_nphy_rf_ctl_override_rev7(dev, 0x80, b43_nphy_read_lpf_ctl(dev, 0),
++				      0, false, 1);
++
++	if (!is_2g && (phy->radio_rev == 4 || phy->radio_rev == 6))
++		mixgain = 0x50;
++	else if (is_2g && phy->radio_rev == 5)
++		mixgain = core ? 0x00 : 0x20;
++	b43_nphy_rf_ctl_override_rev7(dev, 0x800, mixgain, 1 << core, false, 0);
++
++	b43_nphy_rf_ctl_override_one_to_many(dev, N_RF_CTL_OVER_CMD_TX_PU, 1,
++					     1 << core, false);
++	b43_nphy_rf_ctl_override_one_to_many(dev, N_RF_CTL_OVER_CMD_TX_PU, 0,
++					     1 << off_core, false);
++
++	b43_nphy_rf_ctl_override_rev7(dev, 0x8, 0, 0x3, false, 0);
++	b43_nphy_rf_ctl_override_rev7(dev, 0x4, 1, 1 << core, false, 1);
++	b43_nphy_rf_ctl_override_rev7(dev, 0x1, 0, 1 << core, false, 1);
++	b43_nphy_rf_ctl_override_rev7(dev, 0x2, 1, 1 << core, false, 2);
++	b43_nphy_rf_ctl_override_rev7(dev, 0x100, 0, 1 << core, false, 1);
++	b43_nphy_rf_ctl_override_rev7(dev, 0x200, 1, 1 << core, false, 1);
++	b43_nphy_rf_ctl_override_rev7(dev, 0x400, 0, 1 << core, false, 1);
++	b43_nphy_rf_ctl_override_rev7(dev, 0x8, 1, 1 << core, false, 1);
++	b43_nphy_rf_ctl_override_rev7(dev, 0x20, 0, 1 << core, false, 1);
++	b43_nphy_rf_ctl_override_rev7(dev, 0x10, 0, 1 << core, false, 1);
++
++	state->afectrl[core] = b43_phy_read(dev, afectl[core]);
++	state->afeoverride[core] = b43_phy_read(dev, afeover[core]);
++	state->afectrl[off_core] = b43_phy_read(dev, afectl[off_core]);
++	state->afeoverride[off_core] = b43_phy_read(dev, afeover[off_core]);
++
++	b43_phy_mask(dev, afectl[core], ~0x4);
++	b43_phy_set(dev, afeover[core], 0x4);
++	b43_phy_set(dev, afectl[off_core], 0x4);
++	b43_phy_set(dev, afeover[off_core], 0x4);
++
++	if (is_2g) {
++		attn_reg = R2057_TX0_TXRXCOUPLE_2G_ATTEN;
++		pwrup_reg = R2057_TX0_TXRXCOUPLE_2G_PWRUP;
++	} else {
++		attn_reg = R2057_TX0_TXRXCOUPLE_5G_ATTEN;
++		pwrup_reg = R2057_TX0_TXRXCOUPLE_5G_PWRUP;
++	}
++	state->atten[core] = b43_radio_read(dev, r + attn_reg);
++	state->atten[off_core] = b43_radio_read(dev, r_off + attn_reg);
++
++	b43_radio_write(dev, r + pwrup_reg, 0xc);
++	if (is_2g && phy->radio_rev == 5)
++		b43_radio_write(dev, r + attn_reg, core ? 0xf2 : 0xf7);
++	else if (!is_2g && (phy->radio_rev == 7 || phy->radio_rev == 8))
++		b43_radio_write(dev, r + attn_reg, 0xf4);
++	else
++		b43_radio_write(dev, r + attn_reg, 0xf0);
++	b43_radio_write(dev, r_off + pwrup_reg, 0x0);
++	b43_radio_write(dev, r_off + attn_reg, 0xff);
++
++	b43_nphy_tx_tone(dev, 4000, 181, false, false, false);
++
++	b43_phy_set(dev, core ? B43_NPHY_PAPD_EN1 : B43_NPHY_PAPD_EN0, 0x1);
++	b43_phy_set(dev, core ? B43_NPHY_PAPD_CAL_SHIFTS1 :
++				B43_NPHY_PAPD_CAL_SHIFTS0, 0x2000);
++	b43_phy_mask(dev, off_core ? B43_NPHY_PAPD_EN1 : B43_NPHY_PAPD_EN0, ~0x1);
++	b43_phy_mask(dev, off_core ? B43_NPHY_PAPD_CAL_SHIFTS1 :
++				     B43_NPHY_PAPD_CAL_SHIFTS0, ~0x2000);
++}
++
++static void b43_nphy_papd_cal_cleanup(struct b43_wldev *dev,
++				      struct b43_nphy_papd_state *state)
++{
++	struct b43_phy *phy = &dev->phy;
++	bool is_2g = b43_current_band(dev->wl) == NL80211_BAND_2GHZ;
++	u16 afectl[2] = { B43_NPHY_AFECTL_C1, B43_NPHY_AFECTL_C2 };
++	u16 afeover[2] = { B43_NPHY_AFECTL_OVER1, B43_NPHY_AFECTL_OVER };
++	u8 core;
++
++	b43_nphy_stop_playback(dev);
++
++	for (core = 0; core < 2; core++) {
++		u16 r = core ? 0x20 : 0;
++
++		if (is_2g) {
++			b43_radio_write(dev, r + R2057_TX0_TXRXCOUPLE_2G_PWRUP, 0);
++			b43_radio_write(dev, r + R2057_TX0_TXRXCOUPLE_2G_ATTEN,
++					state->atten[core]);
++		} else {
++			b43_radio_write(dev, r + R2057_TX0_TXRXCOUPLE_5G_PWRUP, 0);
++			b43_radio_write(dev, r + R2057_TX0_TXRXCOUPLE_5G_ATTEN,
++					state->atten[core]);
++		}
++	}
++
++	if (phy->radio_rev == 4 || phy->radio_rev == 6)
++		b43_nphy_rf_ctl_override_rev7(dev, 0x4, 1, 0x3, false, 0);
++	else
++		b43_nphy_rf_ctl_override_rev7(dev, 0x4, 0, 0x3, true, 0);
++	b43_nphy_rf_ctl_override_rev7(dev, 0x2, 0, 0x3, true, 1);
++	b43_nphy_rf_ctl_override_rev7(dev, 0x1, 0, 0x3, true, 2);
++	b43_nphy_rf_ctl_override_rev7(dev, 0x4, 0, 0x3, true, 2);
++	b43_nphy_rf_ctl_override_rev7(dev, 0x800, 1, 0x3, true, 1);
++	b43_nphy_rf_ctl_override_rev7(dev, 0x8, 0, 0x3, true, 0);
++	b43_nphy_rf_ctl_override_rev7(dev, 0x800, 0, 0x3, true, 0);
++	b43_nphy_rf_ctl_override_rev7(dev, 0x1000, 0, 0x3, true, 0);
++	b43_nphy_rf_ctl_override_rev7(dev, 0x4, 1, 0x3, true, 1);
++	b43_nphy_rf_ctl_override_rev7(dev, 0x1, 0, 0x3, true, 1);
++	b43_nphy_rf_ctl_override_rev7(dev, 0x2, 1, 0x3, true, 2);
++	b43_nphy_rf_ctl_override_rev7(dev, 0x100, 0, 0x3, true, 1);
++	b43_nphy_rf_ctl_override_rev7(dev, 0x200, 1, 0x3, true, 1);
++	b43_nphy_rf_ctl_override_rev7(dev, 0x400, 0, 0x3, true, 1);
++	b43_nphy_rf_ctl_override_rev7(dev, 0x8, 1, 0x3, true, 1);
++	b43_nphy_rf_ctl_override_rev7(dev, 0x20, 0, 0x3, true, 1);
++	b43_nphy_rf_ctl_override_rev7(dev, 0x10, 0, 0x3, true, 1);
++
++	for (core = 0; core < 2; core++) {
++		b43_phy_write(dev, afectl[core], state->afectrl[core]);
++		b43_phy_write(dev, afeover[core], state->afeoverride[core]);
++	}
++
++	b43_nphy_ipa_set_bbmult(dev, (state->bbmult >> 8) & 0xff,
++				state->bbmult & 0xff);
++
++	b43_nphy_rf_ctl_override_rev7(dev, 0x80, 0, 0, true, 1);
++}
++
++/* Run one PAPD measurement on @core; fills the core's epsilon table */
++static void b43_nphy_papd_cal_core(struct b43_wldev *dev, u16 pad_gain,
++				   enum b43_nphy_papd_cal_mode mode, u8 core)
++{
++	struct b43_phy *phy = &dev->phy;
++	bool is_2g = b43_current_band(dev->wl) == NL80211_BAND_2GHZ;
++	struct nphy_txgains gains = b43_nphy_get_tx_gains(dev);
++	u8 off_core = core ^ 1;
++	u16 shifts = core ? B43_NPHY_PAPD_CAL_SHIFTS1 : B43_NPHY_PAPD_CAL_SHIFTS0;
++	u16 txgain, start, yref, end = 63;
++	u8 m[2];
++	int i;
++
++	txgain = (gains.tx_lpf[core] << 15) | (gains.txgm[core] << 12) |
++		 (gains.pga[core] << 8) | (gains.pad[core] << 3) |
++		 gains.ipa[core];
++	if (is_2g)
++		txgain = (txgain & ~0xf8) | (pad_gain << 3);
++	else
++		txgain = (txgain & ~0xf00) | (pad_gain << 8);
++	b43_nphy_rf_ctl_override_one_to_many(dev, N_RF_CTL_OVER_CMD_TX_GAIN,
++					     txgain, 1 << core, false);
++
++	if (!is_2g)
++		m[core] = b43_is_40mhz(dev) ? 75 : 107;
++	else if (phy->radio_rev <= 4 || phy->radio_rev == 6)
++		m[core] = b43_is_40mhz(dev) ? 60 : 79;
++	else
++		m[core] = b43_is_40mhz(dev) ? 45 : 64;
++	m[off_core] = 0;
++	b43_nphy_ipa_set_bbmult(dev, m[0], m[1]);
++
++	if (is_2g && (phy->radio_rev == 4 || phy->radio_rev == 6))
++		start = 30;
++	else if (!is_2g && phy->radio_rev != 5 && phy->radio_rev != 7 &&
++		 phy->radio_rev != 8)
++		start = 35;
++	else
++		start = 25;
++	yref = start;
++
++	if (mode == B43_NPHY_PAPD_CAL_GCTRL) {
++		if (is_2g && phy->radio_rev == 5)
++			start = 55;
++		else if (is_2g && (phy->radio_rev == 7 || phy->radio_rev == 8))
++			start = 60;
++		else
++			start = 63;
++	}
++
++	b43_phy_set(dev, core ? B43_NPHY_PAPD_EN1 : B43_NPHY_PAPD_EN0, 0x1);
++	b43_phy_mask(dev, off_core ? B43_NPHY_PAPD_EN1 : B43_NPHY_PAPD_EN0, ~0x1);
++	b43_phy_set(dev, shifts, 0x2000);
++	b43_phy_mask(dev, off_core ? B43_NPHY_PAPD_CAL_SHIFTS1 :
++				     B43_NPHY_PAPD_CAL_SHIFTS0, ~0x2000);
++
++	b43_phy_write(dev, B43_NPHY_PAPD_CAL_SETTLE, 0x80);
++	b43_phy_write(dev, B43_NPHY_PAPD_CAL_CORRELATE, 0x100);
++	b43_phy_maskset(dev, shifts, ~0x70, 11 << 4);
++	b43_phy_maskset(dev, shifts, ~0x700, 11 << 8);
++	b43_phy_maskset(dev, shifts, ~0x7, 0x3);
++	b43_phy_write(dev, B43_PHY_N(0x2E5), 0x20);
++	b43_phy_maskset(dev, B43_NPHY_PAPD_CAL_YREFEPSILON, ~0x3f, yref);
++	b43_phy_maskset(dev, B43_NPHY_PAPD_CAL_RANGE, ~0x3f, start);
++	b43_phy_maskset(dev, B43_NPHY_PAPD_CAL_RANGE, ~0x3f00, end << 8);
++
++	b43_nphy_rf_ctl_override_rev7(dev, 0x8, 1, core ? 2 : 1, false, 0);
++	b43_nphy_rf_ctl_override_rev7(dev, 0x8, 0, core ? 1 : 2, false, 0);
++
++	b43_phy_write(dev, B43_NPHY_PAPD_CAL_RUN, 1);
++	for (i = 0; i < 100000; i++) {
++		if (!b43_phy_read(dev, B43_NPHY_PAPD_CAL_RUN))
++			break;
++		udelay(10);
++	}
++	if (i == 100000)
++		b43err(dev->wl, "PAPD calibration timed out on core %d\n", core);
++
++	b43_nphy_rf_ctl_override_rev7(dev, 0x8, 0, 0x3, false, 0);
++
++	/* The reference point itself has no distortion by definition */
++	b43_ntab_write(dev, B43_NTAB32(B43_NPHY_PAPD_TBL_EPS(core), yref), 0);
++
++	b43_nphy_rf_ctl_override_one_to_many(dev, N_RF_CTL_OVER_CMD_TX_GAIN,
++					     txgain, 1 << core, true);
++}
++
++/* Find the PAD gain at which the PA starts to saturate the epsilon range */
++static u8 b43_nphy_papd_find_gain(struct b43_wldev *dev, u8 core)
++{
++	struct b43_phy *phy = &dev->phy;
++	const u8 *codes;
++	int ncodes, idx = 0, i;
++	bool clip, prev_clip = false, first = true;
++	s32 re, im;
++	u32 eps;
++
++	if (phy->radio_rev == 5) {
++		codes = b43_nphy_papd_pad_gain_codes_2057rev5;
++		ncodes = ARRAY_SIZE(b43_nphy_papd_pad_gain_codes_2057rev5);
++	} else if (phy->radio_rev == 7 || phy->radio_rev == 8) {
++		codes = b43_nphy_papd_pad_gain_codes_2057rev7;
++		ncodes = ARRAY_SIZE(b43_nphy_papd_pad_gain_codes_2057rev7);
++	} else {
++		codes = b43_nphy_papd_pad_all_gain_codes_2057;
++		ncodes = ARRAY_SIZE(b43_nphy_papd_pad_all_gain_codes_2057);
++	}
++
++	for (i = 0; i < 20; i++) {
++		b43_nphy_papd_cal_core(dev, codes[idx], B43_NPHY_PAPD_CAL_GCTRL,
++				       core);
++		eps = b43_ntab_read(dev, B43_NTAB32(B43_NPHY_PAPD_TBL_EPS(core), 63));
++		b43_nphy_papd_decode_epsilon(eps, &re, &im);
++		clip = re == 4095 || re == -4096 || im == 4095 || im == -4096;
++
++		if (!first && clip != prev_clip) {
++			if (!clip)
++				idx--;
++			break;
++		}
++		idx += clip ? 1 : -1;
++		if (idx < 0 || idx >= ncodes) {
++			idx = clamp(idx, 0, ncodes - 1);
++			break;
++		}
++		first = false;
++		prev_clip = clip;
++	}
++
++	return codes[idx];
++}
++
++static void b43_nphy_papd_cal(struct b43_wldev *dev)
++{
++	struct b43_phy *phy = &dev->phy;
++	struct b43_phy_n *nphy = phy->n;
++	bool is_2g = b43_current_band(dev->wl) == NL80211_BAND_2GHZ;
++	struct b43_nphy_papd_state state;
++	const s16 *dlt;
++	u8 pad_gain[2];
++	u16 bbcfg;
++	s16 offset;
++	u8 core;
++	int i;
++
++	if (phy->rev < 7 || phy->rev >= 19 || !is_2g || !b43_nphy_ipa(dev))
++		return;
++
++	if (nphy->hang_avoid)
++		b43_nphy_stay_in_carrier_search(dev, true);
++
++	b43_ntab_write_bulk(dev, B43_NTAB32(B43_NPHY_PAPD_TBL_SCAL(0), 0),
++			    ARRAY_SIZE(b43_nphy_papd_scaltbl),
++			    b43_nphy_papd_scaltbl);
++	b43_ntab_write_bulk(dev, B43_NTAB32(B43_NPHY_PAPD_TBL_SCAL(1), 0),
++			    ARRAY_SIZE(b43_nphy_papd_scaltbl),
++			    b43_nphy_papd_scaltbl);
++
++	bbcfg = b43_phy_read(dev, B43_NPHY_BBCFG);
++	b43_phy_mask(dev, B43_NPHY_BBCFG, 0x7FFF);
++
++	for (core = 0; core < 2; core++)
++		for (i = 0; i < B43_NPHY_PAPD_EPS_TBL_SIZE; i++)
++			b43_ntab_write(dev,
++				       B43_NTAB32(B43_NPHY_PAPD_TBL_EPS(core), i), 0);
++
++	/* Calibrate with the plain rev4 iPA filters, as brcmsmac does */
++	if (b43_is_40mhz(dev))
++		b43_nphy_pa_set_tx_dig_filter(dev, 0x195,
++					      tbl_tx_filter_coef_rev4[4]);
++	else
++		b43_nphy_pa_set_tx_dig_filter(dev, 0x186,
++					      tbl_tx_filter_coef_rev4[3]);
++
++	state.bbmult = b43_nphy_ipa_get_bbmult(dev);
++	for (core = 0; core < 2; core++) {
++		b43_nphy_papd_cal_setup(dev, &state, core);
++		if (phy->radio_rev == 3 || phy->radio_rev == 4 ||
++		    phy->radio_rev == 6)
++			pad_gain[core] = 23;
++		else
++			pad_gain[core] = b43_nphy_papd_find_gain(dev, core);
++		b43_nphy_papd_cal_core(dev, pad_gain[core],
++				       B43_NPHY_PAPD_CAL_FULL, core);
++		b43_nphy_papd_cal_cleanup(dev, &state);
++	}
++
++	if (phy->radio_rev == 3 || phy->radio_rev == 4 || phy->radio_rev == 6)
++		dlt = b43_nphy_papd_padgain_dlt_2g_2057rev3n4;
++	else if (phy->radio_rev == 5)
++		dlt = b43_nphy_papd_padgain_dlt_2g_2057rev5;
++	else if (phy->radio_rev == 7 || phy->radio_rev == 8)
++		dlt = b43_nphy_papd_padgain_dlt_2g_2057rev7;
++	else
++		dlt = b43_ntab_get_rf_pwr_offset_table(dev);
++	if (!dlt)
++		dlt = b43_nphy_papd_padgain_dlt_2g_2057rev7;
++
++	for (core = 0; core < 2; core++) {
++		offset = -60 + 27;
++		if (phy->radio_rev == 3)
++			offset += -2;
++		else if (phy->radio_rev == 5)
++			offset += 3;
++		else
++			offset += -1;
++		offset += -(dlt[pad_gain[core]] + 1) / 2;
++		if (phy->radio_rev == 3 || phy->radio_rev == 4 ||
++		    phy->radio_rev == 6)
++			offset += -1;
++
++		b43_phy_maskset(dev, core ? B43_NPHY_EPS_TABLE_ADJ1 :
++					    B43_NPHY_EPS_TABLE_ADJ0,
++				0x007F, ((u16)offset << 7) & 0xff80);
++		nphy->papd_epsilon_offset[core] = offset;
++
++		if (modparam_nphy_txpwrdbg) {
++			s32 re, im;
++			u32 eps = b43_ntab_read(dev,
++				B43_NTAB32(B43_NPHY_PAPD_TBL_EPS(core), 63));
++
++			b43_nphy_papd_decode_epsilon(eps, &re, &im);
++			b43info(dev->wl, "papd core %d: pad gain %d eps offset %d eps[63] %d%+di\n",
++				core, pad_gain[core], offset, re, im);
++		}
++	}
++
++	b43_phy_set(dev, B43_NPHY_PAPD_EN0, 0x1);
++	b43_phy_set(dev, B43_NPHY_PAPD_EN1, 0x1);
++	b43_phy_mask(dev, B43_NPHY_PAPD_CAL_SHIFTS0, ~0x2000);
++	b43_phy_mask(dev, B43_NPHY_PAPD_CAL_SHIFTS1, ~0x2000);
++
++	b43_phy_write(dev, B43_NPHY_BBCFG, bbcfg);
++	b43_nphy_int_pa_set_tx_dig_filters(dev);
++
++	if (nphy->hang_avoid)
++		b43_nphy_stay_in_carrier_search(dev, false);
++}
++
+ /* http://bcm-v4.sipsolutions.net/802.11/PHY/Init/N */
+ static int b43_phy_initn(struct b43_wldev *dev)
+ {
+@@ -6215,6 +6693,8 @@ static int b43_phy_initn(struct b43_wldev *dev)
+ 				if (!b43_nphy_cal_tx_iq_lo(dev, target, true, false))
+ 					if (b43_nphy_cal_rx_iq(dev, target, 2, 0) == 0)
+ 						b43_nphy_save_cal(dev);
++				if (modparam_nphy_papd == 2)
++					b43_nphy_papd_cal(dev);
+ 			} else if (nphy->mphase_cal_phase_id == 0) {
+ 				;/* N PHY Periodic Calibration with arg 3 */
+ 			}
+diff --git a/drivers/net/wireless/broadcom/b43/tables_nphy.c b/drivers/net/wireless/broadcom/b43/tables_nphy.c
+index 41a25d909..4f4be5efb 100644
+--- a/drivers/net/wireless/broadcom/b43/tables_nphy.c
++++ b/drivers/net/wireless/broadcom/b43/tables_nphy.c
+@@ -3149,8 +3149,8 @@ static const struct nphy_rf_control_override_rev7
+ 	{ 0x0080, 0x340, 0x341, 0x0700, 8 },
+ 	{ 0x0800, 0x340, 0x341, 0x4000, 14 },
+ 	{ 0x0400, 0x340, 0x341, 0x2000, 13 },
+-	{ 0x0200, 0x340, 0x341, 0x0800, 12 },
+-	{ 0x0100, 0x340, 0x341, 0x0100, 11 },
++	{ 0x0200, 0x340, 0x341, 0x1000, 12 },
++	{ 0x0100, 0x340, 0x341, 0x0800, 11 },
+ 	{ 0x0040, 0x340, 0x341, 0x0040, 6 },
+ 	{ 0x0001, 0x340, 0x341, 0x0001, 0 },
+ };
+-- 
+2.43.0
+
