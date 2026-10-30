@@ -1,0 +1,72 @@
+From e5f7b6f8c4b3da5d263b6a5bc4bdeacfe51b653a Mon Sep 17 00:00:00 2001
+From: Luca Casati <luk00casati@gmail.com>
+Date: Fri, 30 Oct 2026 08:15:04 +0100
+Subject: [PATCH 1/6] bwn: Attach BCM43227/BCM43228 (N-PHY rev 16, radio 2057)
+
+Add the BCM43227 and BCM43228 PCI IDs, marked BWN_QUIRK_UNTESTED, and
+let bwn_phy_getinfo() accept N-PHY rev 16 with the 2057 radio. The GPL
+N-PHY code (BWN_GPL_PHY) already has the rev 16 / radio 2057 rev 9
+tables. Also print the PHY and radio IDs under BWN_DEBUG_PHY.
+
+Not yet tested on hardware.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ sys/dev/bwn/if_bwn.c     | 9 +++++++--
+ sys/dev/bwn/if_bwn_pci.c | 6 ++++++
+ 2 files changed, 13 insertions(+), 2 deletions(-)
+
+diff --git a/sys/dev/bwn/if_bwn.c b/sys/dev/bwn/if_bwn.c
+index 0f840c0..2fb61b7 100644
+--- a/sys/dev/bwn/if_bwn.c
++++ b/sys/dev/bwn/if_bwn.c
+@@ -1583,7 +1583,7 @@ bwn_phy_getinfo(struct bwn_mac *mac, int gmode)
+ 	    (phy->type == BWN_PHYTYPE_B && phy->rev != 2 &&
+ 		phy->rev != 4 && phy->rev != 6 && phy->rev != 7) ||
+ 	    (phy->type == BWN_PHYTYPE_G && phy->rev > 9) ||
+-	    (phy->type == BWN_PHYTYPE_N && phy->rev > 6) ||
++	    (phy->type == BWN_PHYTYPE_N && phy->rev > 6 && phy->rev != 16) ||
+ 	    (phy->type == BWN_PHYTYPE_LP && phy->rev > 2))
+ 		goto unsupphy;
+ 
+@@ -1597,6 +1597,10 @@ bwn_phy_getinfo(struct bwn_mac *mac, int gmode)
+ 	phy->rf_ver = (tmp & 0x0ffff000) >> 12;
+ 	phy->rf_manuf = (tmp & 0x00000fff);
+ 
++	DPRINTF(sc, BWN_DEBUG_PHY, "PHY type %#x rev %#x analog %#x, "
++	    "radio manuf %#x ver %#x rev %#x\n", phy->type, phy->rev,
++	    phy->analog, phy->rf_manuf, phy->rf_ver, phy->rf_rev);
++
+ 	/*
+ 	 * For now, just always do full init (ie, what bwn has traditionally
+ 	 * done)
+@@ -1610,7 +1614,8 @@ bwn_phy_getinfo(struct bwn_mac *mac, int gmode)
+ 	    (phy->type == BWN_PHYTYPE_B && (phy->rf_ver & 0xfff0) != 0x2050) ||
+ 	    (phy->type == BWN_PHYTYPE_G && phy->rf_ver != 0x2050) ||
+ 	    (phy->type == BWN_PHYTYPE_N &&
+-	     phy->rf_ver != 0x2055 && phy->rf_ver != 0x2056) ||
++	     phy->rf_ver != 0x2055 && phy->rf_ver != 0x2056 &&
++	     !(phy->rf_ver == 0x2057 && phy->rev >= 7)) ||
+ 	    (phy->type == BWN_PHYTYPE_LP &&
+ 	     phy->rf_ver != 0x2062 && phy->rf_ver != 0x2063))
+ 		goto unsupradio;
+diff --git a/sys/dev/bwn/if_bwn_pci.c b/sys/dev/bwn/if_bwn_pci.c
+index a64c53a..4b0c26b 100644
+--- a/sys/dev/bwn/if_bwn_pci.c
++++ b/sys/dev/bwn/if_bwn_pci.c
+@@ -99,6 +99,12 @@ static const struct bwn_pci_device bcma_devices[] = {
+ 	BWN_BCM_DEV(BCM43224_D11N,	"BCM43224 802.11n Dual-Band",	0),
+ 	BWN_BCM_DEV(BCM43224_D11N_ID_VEN1, "BCM43224 802.11n Dual-Band",0),
+ 	BWN_BCM_DEV(BCM43225_D11N2G,	"BCM43225 802.11n 2GHz",	0),
++	BWN_BCM_DEV(BCM43227_D11N2G,	"BCM43227 802.11n 2GHz",
++	    BWN_QUIRK_UNTESTED),
++	BWN_BCM_DEV(BCM43228_D11N,	"BCM43228 802.11n Dual-Band",
++	    BWN_QUIRK_UNTESTED),
++	BWN_BCM_DEV(BCM43228_D11N5G,	"BCM43228 802.11n 5GHz",
++	    BWN_QUIRK_UNTESTED),
+ 	{ 0, 0, NULL, 0}
+ };
+ 
+-- 
+2.43.0
+

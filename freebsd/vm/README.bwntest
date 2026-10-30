@@ -1,0 +1,17 @@
+BWNTEST: FreeBSD 15.1 kernel with the bwn BCM43228 patch (BWN_GPL_PHY, BWN_DEBUG)
+plus a firmware module for d11 core rev 30 (ucode30_mimo, n16initvals30,
+n16bsinitvals30, extracted from Broadcom wl 6.30.163.46 by b43-fwcutter).
+Personal use only: the firmware is not redistributable.
+
+Install on FreeBSD 15.1 amd64, as root. This doesn't touch /boot/kernel:
+  tar -C / -xf bwntest-15.1.tar boot
+  nextboot -k BWNTEST     # boots BWNTEST once; the next reboot is GENERIC again
+
+Add to /boot/loader.conf (only BWNTEST has these modules):
+  hw.bwn_pci.attach_untested=1
+  hw.bwn.debug=0x40000
+  if_bwn_load="YES"
+  bwn_v4_n30_ucode_load="YES"
+
+Reboot, then:
+  dmesg | grep -iE 'bwn|bhnd|bcma'

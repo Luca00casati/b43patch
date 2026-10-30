@@ -1,0 +1,33 @@
+From bdf209ea54a5ed55b01467fb2298ff7496583502 Mon Sep 17 00:00:00 2001
+From: Luca Casati <luk00casati@gmail.com>
+Date: Fri, 30 Oct 2026 08:15:05 +0100
+Subject: [PATCH 6/6] bwn: N-PHY: add the missing override to the rev7 TX_PU
+ command
+
+brcmsmac's NPHY_REV7_RfctrlOverride_cmd_tx_pu also sets field 0x4 of
+rev7 override bank 2 (REV7_RF_CTL_OVER5/6); bwn left it out. With it,
+the override writes match brcmsmac and the wl driver on a BCM43228.
+
+Port of the Linux b43 fix "b43: N-PHY: add the missing override to the
+rev7 TX_PU command".
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ sys/gnu/dev/bwn/phy_n/if_bwn_phy_n_core.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/sys/gnu/dev/bwn/phy_n/if_bwn_phy_n_core.c b/sys/gnu/dev/bwn/phy_n/if_bwn_phy_n_core.c
+index f63c1f5..8d407b5 100644
+--- a/sys/gnu/dev/bwn/phy_n/if_bwn_phy_n_core.c
++++ b/sys/gnu/dev/bwn/phy_n/if_bwn_phy_n_core.c
+@@ -296,6 +296,7 @@ static void bwn_nphy_rf_ctl_override_one_to_many(struct bwn_mac *mac,
+ 		bwn_nphy_rf_ctl_override_rev7(mac, 0x4, value, core, off, 0);
+ 		bwn_nphy_rf_ctl_override_rev7(mac, 0x2, value, core, off, 1);
+ 		bwn_nphy_rf_ctl_override_rev7(mac, 0x1, value, core, off, 2);
++		bwn_nphy_rf_ctl_override_rev7(mac, 0x4, value, core, off, 2);
+ 		bwn_nphy_rf_ctl_override_rev7(mac, 0x0800, 1, core, off, 1);
+ 		break;
+ 	case N_RF_CTL_OVER_CMD_RX_GAIN:
+-- 
+2.43.0
+

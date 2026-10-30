@@ -1,0 +1,46 @@
+From 368d81440bc5e02dd73c95ebeab5279353dc7e7d Mon Sep 17 00:00:00 2001
+From: Luca Casati <luk00casati@gmail.com>
+Date: Fri, 30 Oct 2026 08:15:04 +0100
+Subject: [PATCH 2/6] bwn: N-PHY: fix the TX tone sample table
+
+bwn_nphy_load_samples() masked with (0x3FF << 10) instead of shifting
+the masked I value, and bwn_nphy_gen_load_samples() kept the 16.16
+fixed-point rotation and angle that bwn_cordic() takes in uint16_t,
+which truncates them. Together the sample table ended up all zeros,
+so every calibration that plays a test tone (TX IQ/LO, RX IQ) ran
+without a signal.
+
+Same bug as in Linux b43, fixed there in "b43: N-PHY: fix the TX tone
+sample table".
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ sys/gnu/dev/bwn/phy_n/if_bwn_phy_n_core.c | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/sys/gnu/dev/bwn/phy_n/if_bwn_phy_n_core.c b/sys/gnu/dev/bwn/phy_n/if_bwn_phy_n_core.c
+index 3a5e341..4d61ac4 100644
+--- a/sys/gnu/dev/bwn/phy_n/if_bwn_phy_n_core.c
++++ b/sys/gnu/dev/bwn/phy_n/if_bwn_phy_n_core.c
+@@ -1635,7 +1635,7 @@ static int bwn_nphy_load_samples(struct bwn_mac *mac,
+ 		bwn_nphy_stay_in_carrier_search(mac, 1);
+ 
+ 	for (i = 0; i < len; i++) {
+-		data[i] = (samples[i].i & 0x3FF << 10);
++		data[i] = (samples[i].i & 0x3FF) << 10;
+ 		data[i] |= samples[i].q & 0x3FF;
+ 	}
+ 	bwn_ntab_write_bulk(mac, BWN_NTAB32(17, 0), len, data);
+@@ -1651,7 +1651,8 @@ static uint16_t bwn_nphy_gen_load_samples(struct bwn_mac *mac, uint32_t freq, ui
+ 					bool test)
+ {
+ 	int i;
+-	uint16_t bw, len, rot, angle;
++	uint16_t bw, len;
++	int32_t rot, angle;	/* 16.16 fixed-point degrees, as bwn_cordic() wants */
+ 	struct bwn_c32 *samples;
+ 
+ 	bw = bwn_is_40mhz(mac) ? 40 : 20;
+-- 
+2.43.0
+

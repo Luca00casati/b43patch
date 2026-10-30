@@ -1,0 +1,177 @@
+From e9022e06074d528ad267bbe3421a9487b40dc793 Mon Sep 17 00:00:00 2001
+From: Luca Casati <luk00casati@gmail.com>
+Date: Fri, 30 Oct 2026 08:15:04 +0100
+Subject: [PATCH 3/6] bwn: N-PHY: fix TX IQ/LO calibration
+
+Several bugs kept the TX IQ/LO calibration from working, and on rev7+
+it left TX dead afterwards:
+
+- The busy poll on IQLOCAL_CMD was inverted: bits 15:14 are set while a
+  step runs, so it stopped waiting as soon as the step started.
+- The final copy was reversed: it wrote the stale buffer over the best
+  coefficients (table 15 at 96) and read the active ones (at 80), so the
+  result was never applied.
+- TxCalPhyCleanup lacked the rev7+ part of brcmsmac's
+  wlc_phy_txcal_phycleanup_nphy(): the 0x80 and 0x8 (PA power-up) RF
+  overrides set up for the cal were left in place.
+- There was no counterpart to bwn_nphy_tx_cal_radio_setup_rev7(), so
+  the TSSI/IQ-cal path stayed switched in. Add one, following
+  wlc_phy_txcal_radio_cleanup_nphy().
+- The TRSW override for the second core used 8, which does not fit the
+  2-bit field on rev7+; use 2 as wl does.
+
+Port of the Linux b43 fix "b43: N-PHY: fix TX IQ/LO calibration",
+which was checked against wl's register writes on a BCM43228.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ sys/gnu/dev/bwn/phy_n/if_bwn_phy_n_core.c | 85 +++++++++++++++++++++--
+ 1 file changed, 80 insertions(+), 5 deletions(-)
+
+diff --git a/sys/gnu/dev/bwn/phy_n/if_bwn_phy_n_core.c b/sys/gnu/dev/bwn/phy_n/if_bwn_phy_n_core.c
+index 4d61ac4..8d31eed 100644
+--- a/sys/gnu/dev/bwn/phy_n/if_bwn_phy_n_core.c
++++ b/sys/gnu/dev/bwn/phy_n/if_bwn_phy_n_core.c
+@@ -5010,6 +5010,37 @@ static void bwn_nphy_tx_cal_radio_setup_rev7(struct bwn_mac *mac)
+ 	}
+ }
+ 
++/*
++ * Undo bwn_nphy_tx_cal_radio_setup_rev7(), as brcmsmac's
++ * wlc_phy_txcal_radio_cleanup_nphy() does. Without it the TSSI/IQ cal
++ * path stays switched in after a TX IQ/LO cal.
++ */
++static void bwn_nphy_tx_cal_radio_cleanup(struct bwn_mac *mac)
++{
++	struct bwn_phy *phy = &mac->mac_phy;
++	uint16_t *save = mac->mac_phy.phy_n->tx_rx_cal_radio_saveregs;
++	int core, off;
++	uint16_t r;
++
++	if (phy->rev < 7 || phy->rev >= 19)
++		return;
++
++	for (core = 0; core < 2; core++) {
++		r = core ? 0x20 : 0;
++		off = core * 11;
++
++		BWN_RF_WRITE(mac, r + R2057_TX0_TX_SSI_MASTER, save[off + 0]);
++		BWN_RF_WRITE(mac, r + R2057_TX0_IQCAL_VCM_HG, save[off + 1]);
++		BWN_RF_WRITE(mac, r + R2057_TX0_IQCAL_IDAC, save[off + 2]);
++		BWN_RF_WRITE(mac, r + R2057_TX0_TSSI_VCM, save[off + 3]);
++		BWN_RF_WRITE(mac, r + R2057_TX0_TX_SSI_MUX, save[off + 5]);
++		if (phy->rf_rev != 5)
++			BWN_RF_WRITE(mac, r + R2057_TX0_TSSIA, save[off + 6]);
++		BWN_RF_WRITE(mac, r + R2057_TX0_TSSIG, save[off + 7]);
++		BWN_RF_WRITE(mac, r + R2057_TX0_TSSI_MISC1, save[off + 8]);
++	}
++}
++
+ /* http://bcm-v4.sipsolutions.net/802.11/PHY/N/TxCalRadioSetup */
+ static void bwn_nphy_tx_cal_radio_setup(struct bwn_mac *mac)
+ {
+@@ -5268,7 +5299,9 @@ static struct bwn_nphy_txgains bwn_nphy_get_tx_gains(struct bwn_mac *mac)
+ /* http://bcm-v4.sipsolutions.net/802.11/PHY/N/TxCalPhyCleanup */
+ static void bwn_nphy_tx_cal_phy_cleanup(struct bwn_mac *mac)
+ {
+-	uint16_t *regs = mac->mac_phy.phy_n->tx_rx_cal_phy_saveregs;
++	struct bwn_phy *phy = &mac->mac_phy;
++	struct bwn_phy_n *nphy = mac->mac_phy.phy_n;
++	uint16_t *regs = nphy->tx_rx_cal_phy_saveregs;
+ 
+ 	if (mac->mac_phy.rev >= 3) {
+ 		BWN_PHY_WRITE(mac, BWN_NPHY_AFECTL_C1, regs[0]);
+@@ -5282,7 +5315,38 @@ static void bwn_nphy_tx_cal_phy_cleanup(struct bwn_mac *mac)
+ 		BWN_PHY_WRITE(mac, BWN_NPHY_RFCTL_INTC2, regs[8]);
+ 		BWN_PHY_WRITE(mac, BWN_NPHY_PAPD_EN0, regs[9]);
+ 		BWN_PHY_WRITE(mac, BWN_NPHY_PAPD_EN1, regs[10]);
++
++		/*
++		 * Drop the overrides bwn_nphy_tx_cal_phy_setup() set on rev7+
++		 * (as brcmsmac's wlc_phy_txcal_phycleanup_nphy()). Leaving
++		 * the 0x8 (PA power-up) override in place kills TX.
++		 */
++		if (phy->rev >= 19)
++			bwn_nphy_rf_ctl_override_rev19(mac, 0x80, 0, 0, true,
++						       1);
++		else if (phy->rev >= 7)
++			bwn_nphy_rf_ctl_override_rev7(mac, 0x80, 0, 0, true, 1);
++
+ 		bwn_nphy_reset_cca(mac);
++
++		if (nphy->use_int_tx_iq_lo_cal) {
++			if (phy->rev >= 19) {
++				bwn_nphy_rf_ctl_override_rev19(mac, 0x8, 0, 0x3,
++							       true, 0);
++			} else if (phy->rev >= 8) {
++				bwn_nphy_rf_ctl_override_rev7(mac, 0x8, 0, 0x3,
++							      true, 0);
++			} else if (phy->rev == 7) {
++				if (bwn_current_band(mac) == BWN_BAND_2G) {
++					BWN_RF_SETMASK(mac, R2057_PAD2G_TUNE_PUS_CORE0, ~1, 1);
++					BWN_RF_SETMASK(mac, R2057_PAD2G_TUNE_PUS_CORE1, ~1, 1);
++				} else {
++					BWN_RF_SETMASK(mac, R2057_IPA5G_CASCOFFV_PU_CORE0, ~1, 1);
++					BWN_RF_SETMASK(mac, R2057_IPA5G_CASCOFFV_PU_CORE1, ~1, 1);
++				}
++				BWN_RF_MASK(mac, R2057_OVR_REG0, ~(1 << 4));
++			}
++		}
+ 	} else {
+ 		BWN_PHY_SETMASK(mac, BWN_NPHY_AFECTL_C1, 0x0FFF, regs[0]);
+ 		BWN_PHY_SETMASK(mac, BWN_NPHY_AFECTL_C2, 0x0FFF, regs[1]);
+@@ -5337,7 +5401,12 @@ static void bwn_nphy_tx_cal_phy_setup(struct bwn_mac *mac)
+ 			bwn_nphy_rf_ctl_intc_override(mac, N_INTC_OVERRIDE_PA,
+ 						      0, 3);
+ 		bwn_nphy_rf_ctl_intc_override(mac, N_INTC_OVERRIDE_TRSW, 2, 1);
+-		bwn_nphy_rf_ctl_intc_override(mac, N_INTC_OVERRIDE_TRSW, 8, 2);
++		/*
++		 * On rev7+ the TRSW field is 2 bits wide, so the legacy value
++		 * 8 for the second core ends up as 0; wl uses 2 there.
++		 */
++		bwn_nphy_rf_ctl_intc_override(mac, N_INTC_OVERRIDE_TRSW,
++					      phy->rev >= 7 ? 2 : 8, 2);
+ 
+ 		regs[9] = BWN_PHY_READ(mac, BWN_NPHY_PAPD_EN0);
+ 		regs[10] = BWN_PHY_READ(mac, BWN_NPHY_PAPD_EN1);
+@@ -5712,12 +5781,16 @@ static int bwn_nphy_cal_tx_iq_lo(struct bwn_mac *mac,
+ 			}
+ 
+ 			BWN_PHY_WRITE(mac, BWN_NPHY_IQLOCAL_CMD, cmd);
++			/* bits 15:14 stay set while the cal step runs */
+ 			for (i = 0; i < 2000; i++) {
+ 				tmp = BWN_PHY_READ(mac, BWN_NPHY_IQLOCAL_CMD);
+-				if (tmp & 0xC000)
++				if (!(tmp & 0xC000))
+ 					break;
+ 				DELAY(10);
+ 			}
++			if (i == 2000)
++				BWN_ERRPRINTF(mac->mac_sc,
++				    "TX IQ/LO cal step 0x%04x timed out\n", cmd);
+ 
+ 			bwn_ntab_read_bulk(mac, BWN_NTAB16(15, 96), length,
+ 						buffer);
+@@ -5734,8 +5807,9 @@ static int bwn_nphy_cal_tx_iq_lo(struct bwn_mac *mac,
+ 		last = (mac->mac_phy.rev < 3) ? 6 : 7;
+ 
+ 		if (!mphase || nphy->mphase_cal_phase_id == last) {
+-			bwn_ntab_write_bulk(mac, BWN_NTAB16(15, 96), 4, buffer);
+-			bwn_ntab_read_bulk(mac, BWN_NTAB16(15, 80), 4, buffer);
++			/* apply the result: best coeffs (96) -> active (80) */
++			bwn_ntab_read_bulk(mac, BWN_NTAB16(15, 96), 4, buffer);
++			bwn_ntab_write_bulk(mac, BWN_NTAB16(15, 80), 4, buffer);
+ 			if (mac->mac_phy.rev < 3) {
+ 				buffer[0] = 0;
+ 				buffer[1] = 0;
+@@ -5773,6 +5847,7 @@ static int bwn_nphy_cal_tx_iq_lo(struct bwn_mac *mac,
+ 
+ 	bwn_nphy_tx_cal_phy_cleanup(mac);
+ 	bwn_ntab_write_bulk(mac, BWN_NTAB16(7, 0x110), 2, save);
++	bwn_nphy_tx_cal_radio_cleanup(mac);
+ 
+ 	if (mac->mac_phy.rev < 2 && (!mphase || nphy->mphase_cal_phase_id == last))
+ 		bwn_nphy_tx_iq_workaround(mac);
+-- 
+2.43.0
+

@@ -1,0 +1,66 @@
+From 27a309b4d1b1ab43cc4102e07c189d05f723a443 Mon Sep 17 00:00:00 2001
+From: Luca Casati <luk00casati@gmail.com>
+Date: Fri, 30 Oct 2026 08:15:05 +0100
+Subject: [PATCH 4/6] bwn: N-PHY: fix rev3+ RSSI calibration
+
+Three bugs in bwn_nphy_rev3_rssi_cal():
+
+- On rev7+ the selected VCM was written using the loop counter (8 after
+  the search loop) instead of vcm_final; the 3-bit field turned that
+  into VCM 0 on every rev7+ PHY.
+- The distance used I*I + Q*I instead of I*I + Q*Q (brcmsmac
+  wlc_phy_rssi_cal_nphy_rev3()).
+- Negative W1/W2 offsets were rounded as -(abs(x + 4) / 8) instead of
+  -((abs(x) + 4) / 8).
+
+Port of the Linux b43 fix "b43: N-PHY: fix rev3+ RSSI calibration".
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ sys/gnu/dev/bwn/phy_n/if_bwn_phy_n_core.c | 12 ++++++++----
+ 1 file changed, 8 insertions(+), 4 deletions(-)
+
+diff --git a/sys/gnu/dev/bwn/phy_n/if_bwn_phy_n_core.c b/sys/gnu/dev/bwn/phy_n/if_bwn_phy_n_core.c
+index 8d31eed..80c010a 100644
+--- a/sys/gnu/dev/bwn/phy_n/if_bwn_phy_n_core.c
++++ b/sys/gnu/dev/bwn/phy_n/if_bwn_phy_n_core.c
+@@ -2290,7 +2290,7 @@ static void bwn_nphy_rev3_rssi_cal(struct bwn_mac *mac)
+ 				continue;
+ 			for (vcm = 0; vcm < 8; vcm++) {
+ 				currd = results[vcm][i] * results[vcm][i] +
+-					results[vcm][i + 1] * results[vcm][i];
++					results[vcm][i + 1] * results[vcm][i + 1];
+ 				if (currd < mind) {
+ 					mind = currd;
+ 					minvcm = vcm;
+@@ -2302,12 +2302,16 @@ static void bwn_nphy_rev3_rssi_cal(struct bwn_mac *mac)
+ 			results_min[i] = minpoll;
+ 		}
+ 
+-		/* Select the best VCM */
++		/*
++		 * Select the best VCM. (This used to write the loop counter,
++		 * 8, which the 3-bit field turned into VCM 0 on every rev7+
++		 * PHY.)
++		 */
+ 		if (mac->mac_phy.rev >= 7)
+ 			BWN_RF_SETMASK(mac,
+ 					  core ? R2057_NB_MASTER_CORE1 :
+ 						 R2057_NB_MASTER_CORE0,
+-					  ~R2057_VCM_MASK, vcm);
++					  ~R2057_VCM_MASK, vcm_final);
+ 		else
+ 			BWN_RF_SETMASK(mac, r | B2056_RX_RSSI_MISC,
+ 					  0xE3, vcm_final << 2);
+@@ -2342,7 +2346,7 @@ static void bwn_nphy_rev3_rssi_cal(struct bwn_mac *mac)
+ 				if (j / 2 == core) {
+ 					offset[j] = 232 - poll_results[j];
+ 					if (offset[j] < 0)
+-						offset[j] = -(abs(offset[j] + 4) / 8);
++						offset[j] = -((abs(offset[j]) + 4) / 8);
+ 					else
+ 						offset[j] = (offset[j] + 4) / 8;
+ 					bwn_nphy_scale_offset_rssi(mac, 0,
+-- 
+2.43.0
+
