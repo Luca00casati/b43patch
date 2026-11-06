@@ -1,4 +1,4 @@
-From e669ad1fa3a5bfc199bf99502c304434a1237451 Mon Sep 17 00:00:00 2001
+From e6cdcfd116a8cd0c6c843ef90c1e218170455ce9 Mon Sep 17 00:00:00 2001
 From: Luca Casati <luk00casati@gmail.com>
 Date: Fri, 30 Oct 2026 08:15:04 +0100
 Subject: [PATCH 3/6] bwn: N-PHY: fix TX IQ/LO calibration
@@ -22,8 +22,6 @@ it left TX dead afterwards:
 
 Port of the Linux b43 fix "b43: N-PHY: fix TX IQ/LO calibration",
 which was checked against wl's register writes on a BCM43228.
-
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
  sys/gnu/dev/bwn/phy_n/if_bwn_phy_n_core.c | 69 +++++++++++++++++++++--
  1 file changed, 64 insertions(+), 5 deletions(-)

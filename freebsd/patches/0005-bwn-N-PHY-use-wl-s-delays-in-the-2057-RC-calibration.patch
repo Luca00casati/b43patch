@@ -1,4 +1,4 @@
-From 26e7ff48ea58b882fd317119fd281793abcc05c9 Mon Sep 17 00:00:00 2001
+From dec93e83e1838686321035cc3d74b7a09453f004 Mon Sep 17 00:00:00 2001
 From: Luca Casati <luk00casati@gmail.com>
 Date: Fri, 6 Nov 2026 19:38:27 +0100
 Subject: [PATCH 5/6] bwn: N-PHY: use wl's delays in the 2057 RC calibration
@@ -20,9 +20,6 @@ Use wl's delays.
 
 Port of the Linux b43 fix "b43: N-PHY: use wl's delays in the 2057 RC
 calibration".
-
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01MdqhPhd8aQEe5mMKr6hGnJ
 ---
  sys/gnu/dev/bwn/phy_n/if_bwn_phy_n_core.c | 26 +++++++++++------------
  1 file changed, 13 insertions(+), 13 deletions(-)

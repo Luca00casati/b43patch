@@ -1,4 +1,4 @@
-From 87c6233c4b22ab51dd1c2fd53830a7cbb191cc37 Mon Sep 17 00:00:00 2001
+From cbb5721a9ebc1c5e5d27e10517b21d78be026150 Mon Sep 17 00:00:00 2001
 From: Luca Casati <luk00casati@gmail.com>
 Date: Fri, 30 Oct 2026 08:15:04 +0100
 Subject: [PATCH 2/6] bwn: N-PHY: fix the TX tone sample table
@@ -12,8 +12,6 @@ without a signal.
 
 Same bug as in Linux b43, fixed there in "b43: N-PHY: fix the TX tone
 sample table".
-
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
  sys/gnu/dev/bwn/phy_n/if_bwn_phy_n_core.c | 5 +++--
  1 file changed, 3 insertions(+), 2 deletions(-)

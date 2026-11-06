@@ -1,4 +1,4 @@
-From e7109fe15ecbbf1eed73788e2a007aa029e5d2ee Mon Sep 17 00:00:00 2001
+From 3371bdee50d4896c19d816bd28cead7576300668 Mon Sep 17 00:00:00 2001
 From: Luca Casati <luk00casati@gmail.com>
 Date: Fri, 30 Oct 2026 08:15:05 +0100
 Subject: [PATCH 4/6] bwn: N-PHY: fix rev3+ RSSI calibration
@@ -14,8 +14,6 @@ Three bugs in bwn_nphy_rev3_rssi_cal():
   -((abs(x) + 4) / 8).
 
 Port of the Linux b43 fix "b43: N-PHY: fix rev3+ RSSI calibration".
-
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
  sys/gnu/dev/bwn/phy_n/if_bwn_phy_n_core.c | 6 +++---
  1 file changed, 3 insertions(+), 3 deletions(-)
