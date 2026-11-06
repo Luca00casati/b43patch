@@ -1,4 +1,4 @@
-From 368d81440bc5e02dd73c95ebeab5279353dc7e7d Mon Sep 17 00:00:00 2001
+From 87c6233c4b22ab51dd1c2fd53830a7cbb191cc37 Mon Sep 17 00:00:00 2001
 From: Luca Casati <luk00casati@gmail.com>
 Date: Fri, 30 Oct 2026 08:15:04 +0100
 Subject: [PATCH 2/6] bwn: N-PHY: fix the TX tone sample table
@@ -19,7 +19,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  1 file changed, 3 insertions(+), 2 deletions(-)
 
 diff --git a/sys/gnu/dev/bwn/phy_n/if_bwn_phy_n_core.c b/sys/gnu/dev/bwn/phy_n/if_bwn_phy_n_core.c
-index 3a5e341..4d61ac4 100644
+index 3a5e341..d295d36 100644
 --- a/sys/gnu/dev/bwn/phy_n/if_bwn_phy_n_core.c
 +++ b/sys/gnu/dev/bwn/phy_n/if_bwn_phy_n_core.c
 @@ -1635,7 +1635,7 @@ static int bwn_nphy_load_samples(struct bwn_mac *mac,
@@ -37,7 +37,7 @@ index 3a5e341..4d61ac4 100644
  	int i;
 -	uint16_t bw, len, rot, angle;
 +	uint16_t bw, len;
-+	int32_t rot, angle;	/* 16.16 fixed-point degrees, as bwn_cordic() wants */
++	int32_t rot, angle;
  	struct bwn_c32 *samples;
  
  	bw = bwn_is_40mhz(mac) ? 40 : 20;

@@ -1,4 +1,4 @@
-From 66e337bf7633a19f572e68bdbaea55e1652413fb Mon Sep 17 00:00:00 2001
+From 943072aedcafc5de38af7d789041fb83164a9128 Mon Sep 17 00:00:00 2001
 From: Luca Casati <luk00casati@gmail.com>
 Date: Fri, 30 Oct 2026 08:15:05 +0100
 Subject: [PATCH 5/6] bwn: N-PHY: wait for the first 2057 RC calibration run
@@ -14,27 +14,17 @@ calibration run".
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
- sys/gnu/dev/bwn/phy_n/if_bwn_phy_n_core.c | 10 +++++++++-
- 1 file changed, 9 insertions(+), 1 deletion(-)
+ sys/gnu/dev/bwn/phy_n/if_bwn_phy_n_core.c | 1 +
+ 1 file changed, 1 insertion(+)
 
 diff --git a/sys/gnu/dev/bwn/phy_n/if_bwn_phy_n_core.c b/sys/gnu/dev/bwn/phy_n/if_bwn_phy_n_core.c
-index 80c010a..f63c1f5 100644
+index d739200..3b8ad3a 100644
 --- a/sys/gnu/dev/bwn/phy_n/if_bwn_phy_n_core.c
 +++ b/sys/gnu/dev/bwn/phy_n/if_bwn_phy_n_core.c
-@@ -1027,8 +1027,16 @@ static uint16_t bwn_radio_2057_rccal(struct bwn_mac *mac)
- 	}
- 	BWN_RF_WRITE(mac, R2057_RCCAL_X1, 0x6E);
+@@ -1029,6 +1029,7 @@ static uint16_t bwn_radio_2057_rccal(struct bwn_mac *mac)
  
--	/* Start, wait, stop */
-+	/*
-+	 * Start, wait, stop. DONE still holds the previous run's done bit
-+	 * for a few us after the start, so give the cal time to clear it
-+	 * before polling, as for the other two runs. Polling right away
-+	 * stopped this (SCAP) cal before it ran and left RCCAL_SCAP_VAL at
-+	 * 0, which detunes the TX LPF on radio rev 9.
-+	 */
+ 	/* Start, wait, stop */
  	BWN_RF_WRITE(mac, R2057_RCCAL_START_R1_Q1_P1, 0x55);
-+	/* 70..140 */
 +	DELAY(140);
  	if (!bwn_radio_wait_value(mac, R2057_RCCAL_DONE_OSCCAP, 2, 2, 500,
  				  5000000))

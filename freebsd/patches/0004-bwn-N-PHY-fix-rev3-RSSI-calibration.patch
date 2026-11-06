@@ -1,4 +1,4 @@
-From 27a309b4d1b1ab43cc4102e07c189d05f723a443 Mon Sep 17 00:00:00 2001
+From e7109fe15ecbbf1eed73788e2a007aa029e5d2ee Mon Sep 17 00:00:00 2001
 From: Luca Casati <luk00casati@gmail.com>
 Date: Fri, 30 Oct 2026 08:15:05 +0100
 Subject: [PATCH 4/6] bwn: N-PHY: fix rev3+ RSSI calibration
@@ -17,11 +17,11 @@ Port of the Linux b43 fix "b43: N-PHY: fix rev3+ RSSI calibration".
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
- sys/gnu/dev/bwn/phy_n/if_bwn_phy_n_core.c | 12 ++++++++----
- 1 file changed, 8 insertions(+), 4 deletions(-)
+ sys/gnu/dev/bwn/phy_n/if_bwn_phy_n_core.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
 
 diff --git a/sys/gnu/dev/bwn/phy_n/if_bwn_phy_n_core.c b/sys/gnu/dev/bwn/phy_n/if_bwn_phy_n_core.c
-index 8d31eed..80c010a 100644
+index 2a08a62..d739200 100644
 --- a/sys/gnu/dev/bwn/phy_n/if_bwn_phy_n_core.c
 +++ b/sys/gnu/dev/bwn/phy_n/if_bwn_phy_n_core.c
 @@ -2290,7 +2290,7 @@ static void bwn_nphy_rev3_rssi_cal(struct bwn_mac *mac)
@@ -33,17 +33,7 @@ index 8d31eed..80c010a 100644
  				if (currd < mind) {
  					mind = currd;
  					minvcm = vcm;
-@@ -2302,12 +2302,16 @@ static void bwn_nphy_rev3_rssi_cal(struct bwn_mac *mac)
- 			results_min[i] = minpoll;
- 		}
- 
--		/* Select the best VCM */
-+		/*
-+		 * Select the best VCM. (This used to write the loop counter,
-+		 * 8, which the 3-bit field turned into VCM 0 on every rev7+
-+		 * PHY.)
-+		 */
- 		if (mac->mac_phy.rev >= 7)
+@@ -2307,7 +2307,7 @@ static void bwn_nphy_rev3_rssi_cal(struct bwn_mac *mac)
  			BWN_RF_SETMASK(mac,
  					  core ? R2057_NB_MASTER_CORE1 :
  						 R2057_NB_MASTER_CORE0,
@@ -52,7 +42,7 @@ index 8d31eed..80c010a 100644
  		else
  			BWN_RF_SETMASK(mac, r | B2056_RX_RSSI_MISC,
  					  0xE3, vcm_final << 2);
-@@ -2342,7 +2346,7 @@ static void bwn_nphy_rev3_rssi_cal(struct bwn_mac *mac)
+@@ -2342,7 +2342,7 @@ static void bwn_nphy_rev3_rssi_cal(struct bwn_mac *mac)
  				if (j / 2 == core) {
  					offset[j] = 232 - poll_results[j];
  					if (offset[j] < 0)
