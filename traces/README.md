@@ -9,8 +9,10 @@ driver, associates, and pings; `MARK` lines show where it connected.
 | `raw/wl.trace` | wl 6.30.223.271 (proprietary) |
 | `raw/b43.trace` | b43 from v7.0, unmodified |
 | `raw/b43cal.trace` | b43 without the fixes, TX IQ/LO cal enabled |
-| `raw/rssi2.trace` | b43 with the RSSI and RC cal fixes (patches 3, 4) |
+| `raw/rssi2.trace` | b43 with the RSSI fix (patch 3) and the v1 RC cal patch (waits for run 1 to finish) |
 | `raw/papd8.trace` | b43 development build with patches 1, 2, 5 and experimental PAPD |
+| `raw/rccal1.trace`, `raw/rccal2.trace` | b43 with patches 1-3, 5 and `udelay(35)` before the stop of RC cal run 1 |
+| `raw/rccal3.trace`, `raw/rccal4.trace` | b43 with patches 1-5 (patch 4: wl's delays in the RC cal) |
 
 The `.info` files hold the link state and ping results of each run (BSSID
 removed). `raw/lspci.txt` is the card's `lspci -vv`.
@@ -37,5 +39,5 @@ series:
 | 2/5 TRSW override, second core | `excerpts/patch2-trsw.txt` | 55.796751 | b43cal 1230.659560, papd8 21991.266674 |
 | 2/5 final coefficients | `excerpts/patch2-coefficients.txt` | 55.856526 | papd8 21991.292103 |
 | 3/5 RSSI VCM | `excerpts/patch3-rssi-vcm.txt` | 55.765602 | b43 125.617830, rssi2 23522.333972 |
-| 4/5 RC cal SCAP | `excerpts/patch4-rccal.txt` | 55.752070 | b43 125.584546, rssi2 23522.295537 |
+| 4/5 RC cal delays | `excerpts/patch4-rccal.txt` | 55.752070 | b43 125.584546, rccal1 204625.562749, rccal4 207810.792997 |
 | 5/5 TX_PU override | `excerpts/patch5-tx-pu.txt` | 55.865414 | papd8 21991.295718 |

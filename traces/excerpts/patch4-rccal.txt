@@ -1,23 +1,28 @@
-Patch 4/5: b43: N-PHY: wait for the first 2057 RC calibration run
+Patch 4/5: b43: N-PHY: use wl's delays in the 2057 RC calibration
 
-The three RC cal runs (RCCAL_START 0x55 = start, 0x15 = stop) and the
-SCAP value read back afterwards.
-wl reads 8; b43 without the fix reads 0; rssi2 (b43 with the fix) reads 8.
+The three RC cal runs (RCCAL_START 0x55 = start, 0x15 = stop), the DONE
+polls, and the BCAP/SCAP values read back afterwards.
 
-NOTE: wl also polls DONE right after starting the first run and stops it
-at once (55.752070 -> 55.752114), so the wait added by the patch is not
-what wl does; it only brings b43's SCAP to wl's value.
+In every trace, the first poll of run 1 sees DONE = 0x2 left over from
+before, so run 1 is stopped at once. What differs is when the stop is
+written:
+
+  trace    driver                               run 1 stop  stop->start  BCAP  SCAP
+  wl       wl 6.30.223.271                         43 us       118 us      8     8
+  b43      b43 v7.0                                90 us       231 us      8     0
+  rccal1   b43, udelay(35) before run 1's stop     44 us       234 us      8     7
+  rccal2   same module as rccal1                   44 us       234 us      9     7
+  rccal3   b43 with this patch (wl's delays)       48 us       117 us      9     8
+  rccal4   same module as rccal3                   44 us       116 us      8     8
+
+Other b43 traces (not included) stopped run 1 after 84-208 us and read
+SCAP 0 or 0x1f.
+BCAP varies between 8 and 9 from run to run with the same module.
 
 == raw/wl.trace
-   55.752056 RADIO W 1ae                                    0x0061
-   55.752059 RADIO W 15c       RCCAL_TRC0                   0x00e9
-   55.752062 RADIO W 15b       RCCAL_X1                     0x006e
    55.752070 RADIO W 15a       RCCAL_START_R1_Q1_P1         0x0055
    55.752075 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0002
    55.752114 RADIO W 15a       RCCAL_START_R1_Q1_P1         0x0015
-   55.752187 RADIO W 1ae                                    0x0069
-   55.752191 RADIO W 15c       RCCAL_TRC0                   0x00d5
-   55.752194 RADIO W 15b       RCCAL_X1                     0x006e
    55.752233 RADIO W 15a       RCCAL_START_R1_Q1_P1         0x0055
    55.752309 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0000
    55.752339 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0000
@@ -34,60 +39,102 @@ what wl does; it only brings b43's SCAP to wl's value.
    55.752678 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0001
    55.752709 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0001
    55.752740 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0002
+   55.752778 RADIO W 15a       RCCAL_START_R1_Q1_P1         0x0015
+   55.752897 RADIO W 15a       RCCAL_START_R1_Q1_P1         0x0055
+   55.752973 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0000
+   55.753004 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0000
+   55.753035 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0000
+   55.753066 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0000
+   55.753096 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0000
+   55.753127 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0000
+   55.753158 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0000
+   55.753189 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0000
+   55.753220 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0000
+   55.753250 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0001
+   55.753281 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0001
+   55.753312 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0001
+   55.753344 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0001
+   55.753375 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0001
+   55.753406 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0001
+   55.753437 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0001
+   55.753468 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0001
+   55.753498 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0001
+   55.753530 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0001
+   55.753560 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0002
+   55.753599 RADIO W 15a       RCCAL_START_R1_Q1_P1         0x0015
+   55.759166 RADIO R 16b       RCCAL_BCAP_VAL               0x0008
    55.759172 RADIO R 16a       RCCAL_SCAP_VAL               0x0008
 
 == raw/b43.trace
-  125.584537 RADIO W 1ae                                    0x0061
-  125.584540 RADIO W 15c       RCCAL_TRC0                   0x00e9
-  125.584543 RADIO W 15b       RCCAL_X1                     0x006e
   125.584546 RADIO W 15a       RCCAL_START_R1_Q1_P1         0x0055
   125.584553 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0002
   125.584637 RADIO W 15a       RCCAL_START_R1_Q1_P1         0x0015
-  125.584785 RADIO W 1ae                                    0x0069
-  125.584789 RADIO W 15c       RCCAL_TRC0                   0x00d5
-  125.584792 RADIO W 15b       RCCAL_X1                     0x006e
   125.584869 RADIO W 15a       RCCAL_START_R1_Q1_P1         0x0055
   125.585021 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0000
   125.585528 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0002
   125.585601 RADIO W 15a       RCCAL_START_R1_Q1_P1         0x0015
-  125.585749 RADIO W 1ae                                    0x0073
-  125.585752 RADIO W 15b       RCCAL_X1                     0x006e
-  125.585755 RADIO W 15c       RCCAL_TRC0                   0x0099
   125.585833 RADIO W 15a       RCCAL_START_R1_Q1_P1         0x0055
   125.585985 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0000
   125.586492 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0002
   125.586499 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0002
   125.586576 RADIO W 15a       RCCAL_START_R1_Q1_P1         0x0015
-  125.586728 RADIO R 1ae                                    0x0073
-  125.586731 RADIO W 1ae                                    0x0072
   125.608188 RADIO R 16b       RCCAL_BCAP_VAL               0x0008
   125.608195 RADIO R 16a       RCCAL_SCAP_VAL               0x0000
-  125.608195 RADIO R 16a       RCCAL_SCAP_VAL               0x0000
 
-== raw/rssi2.trace
-23522.295528 RADIO W 1ae                                    0x0061
-23522.295531 RADIO W 15c       RCCAL_TRC0                   0x00e9
-23522.295534 RADIO W 15b       RCCAL_X1                     0x006e
-23522.295537 RADIO W 15a       RCCAL_START_R1_Q1_P1         0x0055
-23522.295692 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0000
-23522.296199 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0001
-23522.296708 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0002
-23522.296787 RADIO W 15a       RCCAL_START_R1_Q1_P1         0x0015
-23522.296935 RADIO W 1ae                                    0x0069
-23522.296938 RADIO W 15c       RCCAL_TRC0                   0x00d5
-23522.296941 RADIO W 15b       RCCAL_X1                     0x006e
-23522.297020 RADIO W 15a       RCCAL_START_R1_Q1_P1         0x0055
-23522.297172 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0000
-23522.297682 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0002
-23522.297761 RADIO W 15a       RCCAL_START_R1_Q1_P1         0x0015
-23522.297909 RADIO W 1ae                                    0x0073
-23522.297912 RADIO W 15b       RCCAL_X1                     0x006e
-23522.297915 RADIO W 15c       RCCAL_TRC0                   0x0099
-23522.297993 RADIO W 15a       RCCAL_START_R1_Q1_P1         0x0055
-23522.298146 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0000
-23522.298656 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0002
-23522.298663 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0002
-23522.298742 RADIO W 15a       RCCAL_START_R1_Q1_P1         0x0015
-23522.298894 RADIO R 1ae                                    0x0073
-23522.298897 RADIO W 1ae                                    0x0072
-23522.320127 RADIO R 16a       RCCAL_SCAP_VAL               0x0008
+== raw/rccal1.trace
+204625.562749 RADIO W 15a       RCCAL_START_R1_Q1_P1         0x0055
+204625.562756 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0002
+204625.562794 RADIO W 15a       RCCAL_START_R1_Q1_P1         0x0015
+204625.563028 RADIO W 15a       RCCAL_START_R1_Q1_P1         0x0055
+204625.563179 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0001
+204625.563687 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0002
+204625.563765 RADIO W 15a       RCCAL_START_R1_Q1_P1         0x0015
+204625.563997 RADIO W 15a       RCCAL_START_R1_Q1_P1         0x0055
+204625.564149 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0000
+204625.564656 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0002
+204625.564663 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0002
+204625.564742 RADIO W 15a       RCCAL_START_R1_Q1_P1         0x0015
+204625.586615 RADIO R 16b       RCCAL_BCAP_VAL               0x0008
+204625.586622 RADIO R 16a       RCCAL_SCAP_VAL               0x0007
+
+== raw/rccal4.trace
+207810.792997 RADIO W 15a       RCCAL_START_R1_Q1_P1         0x0055
+207810.793004 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0002
+207810.793042 RADIO W 15a       RCCAL_START_R1_Q1_P1         0x0015
+207810.793159 RADIO W 15a       RCCAL_START_R1_Q1_P1         0x0055
+207810.793236 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0000
+207810.793274 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0000
+207810.793311 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0000
+207810.793348 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0001
+207810.793385 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0001
+207810.793422 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0001
+207810.793458 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0001
+207810.793495 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0001
+207810.793532 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0001
+207810.793569 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0001
+207810.793606 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0001
+207810.793643 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0001
+207810.793680 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0002
+207810.793719 RADIO W 15a       RCCAL_START_R1_Q1_P1         0x0015
+207810.793836 RADIO W 15a       RCCAL_START_R1_Q1_P1         0x0055
+207810.793913 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0000
+207810.793950 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0000
+207810.793987 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0000
+207810.794024 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0000
+207810.794061 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0000
+207810.794098 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0000
+207810.794134 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0000
+207810.794171 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0001
+207810.794208 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0001
+207810.794245 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0001
+207810.794282 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0001
+207810.794319 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0001
+207810.794356 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0001
+207810.794393 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0001
+207810.794430 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0001
+207810.794467 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0001
+207810.794503 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0002
+207810.794510 RADIO R 15e       RCCAL_DONE_OSCCAP            0x0002
+207810.794548 RADIO W 15a       RCCAL_START_R1_Q1_P1         0x0015
+207810.815983 RADIO R 16b       RCCAL_BCAP_VAL               0x0008
+207810.815990 RADIO R 16a       RCCAL_SCAP_VAL               0x0008

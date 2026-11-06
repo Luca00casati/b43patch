@@ -1,0 +1,105 @@
+From 26e7ff48ea58b882fd317119fd281793abcc05c9 Mon Sep 17 00:00:00 2001
+From: Luca Casati <luk00casati@gmail.com>
+Date: Fri, 6 Nov 2026 19:38:27 +0100
+Subject: [PATCH 5/6] bwn: N-PHY: use wl's delays in the 2057 RC calibration
+
+bwn_radio_2057_rccal() follows wl's sequence, but waits 2 * x us where
+wl waits x us, and polls DONE every 500 us where wl polls about every
+30 us.
+
+That breaks the first run. Its poll comes straight after the start,
+while RCCAL_DONE_OSCCAP still has the done bit set from before, so it
+returns at once and the run is stopped. wl does the same, but writes
+the stop about 40 us after the start; bwn waits 70 us, so the stop
+lands while the cal is running. With the same timing, Linux b43 read
+RCCAL_SCAP_VAL as 0 or 0x1f instead of wl's 8 on a BCM43228 (radio
+2057 rev 9), which detunes the TX low-pass filter set up in the rev7+
+workarounds; with wl's delays it read 8.
+
+Use wl's delays.
+
+Port of the Linux b43 fix "b43: N-PHY: use wl's delays in the 2057 RC
+calibration".
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01MdqhPhd8aQEe5mMKr6hGnJ
+---
+ sys/gnu/dev/bwn/phy_n/if_bwn_phy_n_core.c | 26 +++++++++++------------
+ 1 file changed, 13 insertions(+), 13 deletions(-)
+
+diff --git a/sys/gnu/dev/bwn/phy_n/if_bwn_phy_n_core.c b/sys/gnu/dev/bwn/phy_n/if_bwn_phy_n_core.c
+index d739200..5b60c87 100644
+--- a/sys/gnu/dev/bwn/phy_n/if_bwn_phy_n_core.c
++++ b/sys/gnu/dev/bwn/phy_n/if_bwn_phy_n_core.c
+@@ -1029,14 +1029,14 @@ static uint16_t bwn_radio_2057_rccal(struct bwn_mac *mac)
+ 
+ 	/* Start, wait, stop */
+ 	BWN_RF_WRITE(mac, R2057_RCCAL_START_R1_Q1_P1, 0x55);
+-	if (!bwn_radio_wait_value(mac, R2057_RCCAL_DONE_OSCCAP, 2, 2, 500,
++	if (!bwn_radio_wait_value(mac, R2057_RCCAL_DONE_OSCCAP, 2, 2, 30,
+ 				  5000000))
+ 		BWN_DBGPRINTF(mac, "Radio 0x2057 rccal timeout\n");
+ 	/* 35..70 */
+-	DELAY(70);
++	DELAY(35);
+ 	BWN_RF_WRITE(mac, R2057_RCCAL_START_R1_Q1_P1, 0x15);
+ 	/* 70..140 */
+-	DELAY(140);
++	DELAY(70);
+ 
+ 	/* Setup cal */
+ 	if (special) {
+@@ -1050,18 +1050,18 @@ static uint16_t bwn_radio_2057_rccal(struct bwn_mac *mac)
+ 
+ 	/* Start, wait, stop */
+ 	/* 35..70 */
+-	DELAY(70);
++	DELAY(35);
+ 	BWN_RF_WRITE(mac, R2057_RCCAL_START_R1_Q1_P1, 0x55);
+ 	/* 70..140 */
+-	DELAY(140);
+-	if (!bwn_radio_wait_value(mac, R2057_RCCAL_DONE_OSCCAP, 2, 2, 500,
++	DELAY(70);
++	if (!bwn_radio_wait_value(mac, R2057_RCCAL_DONE_OSCCAP, 2, 2, 30,
+ 				  5000000))
+ 		BWN_DBGPRINTF(mac, "Radio 0x2057 rccal timeout\n");
+ 	/* 35..70 */
+-	DELAY(70);
++	DELAY(35);
+ 	BWN_RF_WRITE(mac, R2057_RCCAL_START_R1_Q1_P1, 0x15);
+ 	/* 70..140 */
+-	DELAY(140);
++	DELAY(70);
+ 
+ 	/* Setup cal */
+ 	if (special) {
+@@ -1076,21 +1076,21 @@ static uint16_t bwn_radio_2057_rccal(struct bwn_mac *mac)
+ 
+ 	/* Start, wait, stop */
+ 	/* 35..70 */
+-	DELAY(70);
++	DELAY(35);
+ 	BWN_RF_WRITE(mac, R2057_RCCAL_START_R1_Q1_P1, 0x55);
+ 	/* 70..140 */
+-	DELAY(140);
+-	if (!bwn_radio_wait_value(mac, R2057_RCCAL_DONE_OSCCAP, 2, 2, 500,
++	DELAY(70);
++	if (!bwn_radio_wait_value(mac, R2057_RCCAL_DONE_OSCCAP, 2, 2, 30,
+ 				  5000000)) {
+ 		BWN_ERRPRINTF(mac->mac_sc, "Radio 0x2057 rcal timeout\n");
+ 		return 0;
+ 	}
+ 	tmp = BWN_RF_READ(mac, R2057_RCCAL_DONE_OSCCAP);
+ 	/* 35..70 */
+-	DELAY(70);
++	DELAY(35);
+ 	BWN_RF_WRITE(mac, R2057_RCCAL_START_R1_Q1_P1, 0x15);
+ 	/* 70..140 */
+-	DELAY(140);
++	DELAY(70);
+ 
+ 	if (special)
+ 		BWN_RF_MASK(mac, R2057_RCCAL_MASTER, ~0x1);
+-- 
+2.43.0
+
