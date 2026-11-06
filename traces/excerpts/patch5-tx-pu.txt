@@ -1,0 +1,42 @@
+Patch 5/5: b43: N-PHY: add the missing override to the rev7 TX_PU command
+
+TX_PU override in the PAPD cal setup. Override bank 2 (REV7_RF_CTL_OVER5,
+0x346, and its value register MISC_REG5, 0x344): wl sets field 0x1 and
+then field 0x4 (0x1 -> 0x5). papd8 (b43 with the fix) does the same.
+Stock b43 never runs PAPD, so there is no trace of it without the fix.
+
+== raw/wl.trace
+   55.865388 PHY   R 07a       RFCTL_RSSIO1                 0x0000
+   55.865390 PHY   W 07a       RFCTL_RSSIO1                 0x0002
+   55.865397 PHY   R 342       REV7_RF_CTL_OVER3            0x0080
+   55.865399 PHY   W 342       REV7_RF_CTL_OVER3            0x0082
+   55.865406 PHY   R 340       REV7_RF_CTL_MISC_REG3        0x0400
+   55.865407 PHY   W 340       REV7_RF_CTL_MISC_REG3        0x0402
+   55.865414 PHY   R 346       REV7_RF_CTL_OVER5            0x0000
+   55.865416 PHY   W 346       REV7_RF_CTL_OVER5            0x0001
+   55.865423 PHY   R 344       REV7_RF_CTL_MISC_REG5        0x0000
+   55.865425 PHY   W 344       REV7_RF_CTL_MISC_REG5        0x0001
+   55.865431 PHY   R 346       REV7_RF_CTL_OVER5            0x0001
+   55.865433 PHY   W 346       REV7_RF_CTL_OVER5            0x0005
+   55.865440 PHY   R 344       REV7_RF_CTL_MISC_REG5        0x0001
+   55.865442 PHY   W 344       REV7_RF_CTL_MISC_REG5        0x0005
+   55.865448 PHY   R 342       REV7_RF_CTL_OVER3            0x0082
+   55.865450 PHY   W 342       REV7_RF_CTL_OVER3            0x0882
+
+== raw/papd8.trace
+21991.295712 PHY   W 340       REV7_RF_CTL_MISC_REG3        0x0402
+21991.295718 PHY   R 346       REV7_RF_CTL_OVER5            0x0000
+21991.295719 PHY   W 346       REV7_RF_CTL_OVER5            0x0001
+21991.295725 PHY   R 344       REV7_RF_CTL_MISC_REG5        0x0000
+21991.295727 PHY   W 344       REV7_RF_CTL_MISC_REG5        0x0001
+21991.295732 PHY   R 346       REV7_RF_CTL_OVER5            0x0001
+21991.295733 PHY   W 346       REV7_RF_CTL_OVER5            0x0005
+21991.295739 PHY   R 344       REV7_RF_CTL_MISC_REG5        0x0001
+21991.295741 PHY   W 344       REV7_RF_CTL_MISC_REG5        0x0005
+21991.295746 PHY   R 342       REV7_RF_CTL_OVER3            0x0082
+21991.295748 PHY   W 342       REV7_RF_CTL_OVER3            0x0882
+21991.295753 PHY   R 340       REV7_RF_CTL_MISC_REG3        0x0402
+21991.295755 PHY   W 340       REV7_RF_CTL_MISC_REG3        0x4402
+21991.295761 PHY   R 0ec       RFCTL_OVER                   0x0000
+21991.295762 PHY   W 0ec       RFCTL_OVER                   0x0004
+21991.295768 PHY   R 07d       RFCTL_RSSIO2                 0x0000

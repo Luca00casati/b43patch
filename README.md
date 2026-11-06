@@ -24,6 +24,11 @@ Build out of tree in `drivers/net/wireless/broadcom/b43`:
 - `trace-wl-b43.sh`: original trace script.
 - `wifi-bench.sh`: benchmark used by `b43-lab bench`.
 
+## traces/
+
+mmiotraces of wl and b43 on the BCM43228, with the decoded operations behind
+each patch of the upstream series. See `traces/README.md`.
+
 ## freebsd/
 
 FreeBSD bwn(4) port. `freebsd/patches/` is a `git format-patch` series from

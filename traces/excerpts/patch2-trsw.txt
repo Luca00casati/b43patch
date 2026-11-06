@@ -1,0 +1,25 @@
+Patch 2/5: b43: N-PHY: fix TX IQ/LO calibration
+
+TRSW override for the second core (RFCTL_INTC2, field 7:6) during the cal setup.
+wl sets the field to 2 (0x1000 -> 0x1080) and then the enable bit (0x1480).
+b43 without the fix writes 8 << 6 = 0x200 (bit 9, outside the field); the
+register reads back 0x1000, so only the enable bit is left (0x1400).
+papd8 (b43 with the fix) matches wl.
+
+== raw/wl.trace
+   55.796751 PHY   R 092       RFCTL_INTC2                  0x1000
+   55.796756 PHY   W 092       RFCTL_INTC2                  0x1080
+   55.796763 PHY   R 092       RFCTL_INTC2                  0x1080
+   55.796765 PHY   W 092       RFCTL_INTC2                  0x1480
+
+== raw/b43cal.trace
+ 1230.659560 PHY   R 092       RFCTL_INTC2                  0x1000
+ 1230.659562 PHY   W 092       RFCTL_INTC2                  0x1200
+ 1230.659567 PHY   R 092       RFCTL_INTC2                  0x1000
+ 1230.659569 PHY   W 092       RFCTL_INTC2                  0x1400
+
+== raw/papd8.trace
+21991.266674 PHY   R 092       RFCTL_INTC2                  0x1000
+21991.266675 PHY   W 092       RFCTL_INTC2                  0x1080
+21991.266681 PHY   R 092       RFCTL_INTC2                  0x1080
+21991.266682 PHY   W 092       RFCTL_INTC2                  0x1480

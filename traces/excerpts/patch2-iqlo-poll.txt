@@ -1,0 +1,49 @@
+Patch 2/5: b43: N-PHY: fix TX IQ/LO calibration
+
+Busy poll on IQLOCAL_CMD: bits 15:14 stay set while a step runs.
+wl writes 0x8434, then reads it back with bits 15:14 still set until the step ends.
+b43 without the fix reads it once and goes straight to the result buffer
+(table 15 at 0x60), which is still empty.
+
+== raw/wl.trace
+   55.797866 TAB   W 0f:031                                 0x00004007
+   55.797868 PHY   W 0c1       IQLOCAL_CMDNNUM              0x7966
+   55.797869 PHY   W 0c0       IQLOCAL_CMD                  0x8434
+   55.797876 PHY   R 0c0       IQLOCAL_CMD                  0x8434
+   55.797893 PHY   R 0c0       IQLOCAL_CMD                  0x8434
+   55.797910 PHY   R 0c0       IQLOCAL_CMD                  0x8434
+   55.797927 PHY   R 0c0       IQLOCAL_CMD                  0x8434
+   55.797944 PHY   R 0c0       IQLOCAL_CMD                  0x8434
+   55.797961 PHY   R 0c0       IQLOCAL_CMD                  0x8434
+   55.797978 PHY   R 0c0       IQLOCAL_CMD                  0x8434
+   55.797995 PHY   R 0c0       IQLOCAL_CMD                  0x8434
+   55.798012 PHY   R 0c0       IQLOCAL_CMD                  0x8434
+   55.798029 PHY   R 0c0       IQLOCAL_CMD                  0x8434
+   55.798046 PHY   R 0c0       IQLOCAL_CMD                  0x8434
+   55.798063 PHY   R 0c0       IQLOCAL_CMD                  0x8434
+   55.798080 PHY   R 0c0       IQLOCAL_CMD                  0x8434
+   55.798097 PHY   R 0c0       IQLOCAL_CMD                  0x8434
+   55.798114 PHY   R 0c0       IQLOCAL_CMD                  0x8434
+   55.798131 PHY   R 0c0       IQLOCAL_CMD                  0x8434
+   55.798148 PHY   R 0c0       IQLOCAL_CMD                  0x8434
+   55.798165 PHY   R 0c0       IQLOCAL_CMD                  0x8434
+   55.798182 PHY   R 0c0       IQLOCAL_CMD                  0x8434
+   55.798199 PHY   R 0c0       IQLOCAL_CMD                  0x8434
+   55.798216 PHY   R 0c0       IQLOCAL_CMD                  0x8434
+   55.798233 PHY   R 0c0       IQLOCAL_CMD                  0x8434
+   55.798250 PHY   R 0c0       IQLOCAL_CMD                  0x8434
+   55.798267 PHY   R 0c0       IQLOCAL_CMD                  0x8434
+   55.798284 PHY   R 0c0       IQLOCAL_CMD                  0x8434
+   ...
+
+== raw/b43cal.trace
+ 1230.663325 TAB   R 0f:045                                 0x00000000
+ 1230.663331 TAB   W 0f:045                                 0x00000000
+ 1230.663334 PHY   W 0c0       IQLOCAL_CMD                  0x8434
+ 1230.663340 PHY   R 0c0       IQLOCAL_CMD                  0x8434
+ 1230.663348 TAB   R 0f:060                                 0x00000000
+ 1230.663358 TAB   R 0f:061                                 0x00000000
+ 1230.663364 TAB   R 0f:062                                 0x00000000
+ 1230.663369 TAB   R 0f:063                                 0x00000000
+ 1230.663375 TAB   R 0f:064                                 0x00000000
+ 1230.663381 TAB   R 0f:065                                 0x00000000

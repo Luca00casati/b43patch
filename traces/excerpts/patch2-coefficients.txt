@@ -1,0 +1,17 @@
+Patch 2/5: b43: N-PHY: fix TX IQ/LO calibration
+
+Final TX IQ/LO coefficients copied to table 15 at 80 (0x50..0x53) after the
+first cal. papd8 is b43 with the fix. The values are close to wl's but not
+identical. Stock b43 never writes them (the copy went the wrong way).
+
+== raw/wl.trace
+   55.856526 TAB   W 0f:050                                 0x00000003
+   55.856528 TAB   W 0f:051                                 0x00000001
+   55.856530 TAB   W 0f:052                                 0x0000ffba
+   55.856532 TAB   W 0f:053                                 0x0000fffb
+
+== raw/papd8.trace
+21991.292103 TAB   W 0f:050                                 0x00000000
+21991.292106 TAB   W 0f:051                                 0x00000000
+21991.292109 TAB   W 0f:052                                 0x0000ffb9
+21991.292112 TAB   W 0f:053                                 0x0000fff9

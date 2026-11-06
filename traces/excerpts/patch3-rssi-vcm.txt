@@ -1,0 +1,68 @@
+Patch 3/5: b43: N-PHY: fix rev3+ RSSI calibration
+
+VCM search on radio 2057 (NB_MASTER_COREx, VCM in bits 2:0).
+Each core sweeps VCM 0..7 (0x48..0x4f), then writes the selected one.
+wl selects 3 on both cores (0x4b). b43 without the fix writes 0x48 (VCM 0,
+the loop counter 8 truncated to 3 bits). rssi2 (b43 with the fix) selects
+3 like wl. Only the NB_MASTER writes are shown; the RSSI reads between
+them are left out.
+
+== raw/wl.trace
+   55.765602 RADIO W 0b4       NB_MASTER_CORE0              0x0048
+   55.765835 RADIO W 0b4       NB_MASTER_CORE0              0x0049
+   55.766067 RADIO W 0b4       NB_MASTER_CORE0              0x004a
+   55.766297 RADIO W 0b4       NB_MASTER_CORE0              0x004b
+   55.766529 RADIO W 0b4       NB_MASTER_CORE0              0x004c
+   55.766761 RADIO W 0b4       NB_MASTER_CORE0              0x004d
+   55.766993 RADIO W 0b4       NB_MASTER_CORE0              0x004e
+   55.767224 RADIO W 0b4       NB_MASTER_CORE0              0x004f
+   55.767456 RADIO W 0b4       NB_MASTER_CORE0              0x004b
+   55.767472 RADIO W 139       NB_MASTER_CORE1              0x0048
+   55.767703 RADIO W 139       NB_MASTER_CORE1              0x0049
+   55.767937 RADIO W 139       NB_MASTER_CORE1              0x004a
+   55.768168 RADIO W 139       NB_MASTER_CORE1              0x004b
+   55.768400 RADIO W 139       NB_MASTER_CORE1              0x004c
+   55.768631 RADIO W 139       NB_MASTER_CORE1              0x004d
+   55.768863 RADIO W 139       NB_MASTER_CORE1              0x004e
+   55.769094 RADIO W 139       NB_MASTER_CORE1              0x004f
+   55.769326 RADIO W 139       NB_MASTER_CORE1              0x004b
+
+== raw/b43.trace
+  125.617830 RADIO W 0b4       NB_MASTER_CORE0              0x0048
+  125.618066 RADIO W 0b4       NB_MASTER_CORE0              0x0049
+  125.618304 RADIO W 0b4       NB_MASTER_CORE0              0x004a
+  125.618542 RADIO W 0b4       NB_MASTER_CORE0              0x004b
+  125.619025 RADIO W 0b4       NB_MASTER_CORE0              0x004c
+  125.619264 RADIO W 0b4       NB_MASTER_CORE0              0x004d
+  125.619501 RADIO W 0b4       NB_MASTER_CORE0              0x004e
+  125.619983 RADIO W 0b4       NB_MASTER_CORE0              0x004f
+  125.620221 RADIO W 0b4       NB_MASTER_CORE0              0x0048
+  125.620243 RADIO W 139       NB_MASTER_CORE1              0x0048
+  125.620480 RADIO W 139       NB_MASTER_CORE1              0x0049
+  125.620961 RADIO W 139       NB_MASTER_CORE1              0x004a
+  125.621197 RADIO W 139       NB_MASTER_CORE1              0x004b
+  125.621435 RADIO W 139       NB_MASTER_CORE1              0x004c
+  125.621912 RADIO W 139       NB_MASTER_CORE1              0x004d
+  125.622152 RADIO W 139       NB_MASTER_CORE1              0x004e
+  125.622389 RADIO W 139       NB_MASTER_CORE1              0x004f
+  125.622867 RADIO W 139       NB_MASTER_CORE1              0x0048
+
+== raw/rssi2.trace
+23522.333972 RADIO W 0b4       NB_MASTER_CORE0              0x0048
+23522.334215 RADIO W 0b4       NB_MASTER_CORE0              0x0049
+23522.334677 RADIO W 0b4       NB_MASTER_CORE0              0x004a
+23522.334913 RADIO W 0b4       NB_MASTER_CORE0              0x004b
+23522.335151 RADIO W 0b4       NB_MASTER_CORE0              0x004c
+23522.335645 RADIO W 0b4       NB_MASTER_CORE0              0x004d
+23522.335884 RADIO W 0b4       NB_MASTER_CORE0              0x004e
+23522.336123 RADIO W 0b4       NB_MASTER_CORE0              0x004f
+23522.336620 RADIO W 0b4       NB_MASTER_CORE0              0x004b
+23522.336643 RADIO W 139       NB_MASTER_CORE1              0x0048
+23522.336878 RADIO W 139       NB_MASTER_CORE1              0x0049
+23522.337117 RADIO W 139       NB_MASTER_CORE1              0x004a
+23522.337599 RADIO W 139       NB_MASTER_CORE1              0x004b
+23522.337837 RADIO W 139       NB_MASTER_CORE1              0x004c
+23522.338074 RADIO W 139       NB_MASTER_CORE1              0x004d
+23522.338311 RADIO W 139       NB_MASTER_CORE1              0x004e
+23522.338796 RADIO W 139       NB_MASTER_CORE1              0x004f
+23522.339034 RADIO W 139       NB_MASTER_CORE1              0x004b

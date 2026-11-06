@@ -1,0 +1,4 @@
+Connected to xx:xx:xx:xx:xx:xx (on wlp2s0b1)
+	signal: -43 dBm
+20 packets transmitted, 19 received, +3 duplicates, 5% packet loss, time 3826ms
+rtt min/avg/max/mdev = 14.938/86.798/339.506/92.819 ms, pipe 2

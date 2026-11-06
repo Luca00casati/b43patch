@@ -1,0 +1,41 @@
+Patch 1/5: b43: N-PHY: fix the TX tone sample table
+
+Tone samples written to table 17 before the TX IQ/LO cal.
+wl writes 5440 entries to table 17 in this trace, 4800 of them nonzero.
+b43cal (b43 without the fix, cal enabled) writes 1440, all zero.
+
+== raw/wl.trace
+   55.783690 TAB   W 11:000                                 0x0003e800
+   55.783693 TAB   W 11:001                                 0x0002c4b1
+   55.783697 TAB   W 11:002                                 0x000000fa
+   55.783700 TAB   W 11:003                                 0x000d3cb1
+   55.783703 TAB   W 11:004                                 0x000c1800
+   55.783707 TAB   W 11:005                                 0x000d3f4f
+   55.783710 TAB   W 11:006                                 0x00000306
+   55.783714 TAB   W 11:007                                 0x0002c74f
+   55.783717 TAB   W 11:008                                 0x0003e800
+   55.783720 TAB   W 11:009                                 0x0002c4b1
+   55.783724 TAB   W 11:00a                                 0x000000fa
+   55.783728 MAC   R 3e0       PHY_VER                      0x9900
+   55.783732 TAB   W 11:00b                                 0x000d3cb1
+   55.783735 TAB   W 11:00c                                 0x000c1800
+   55.783738 TAB   W 11:00d                                 0x000d3f4f
+   55.783742 TAB   W 11:00e                                 0x00000306
+
+== raw/b43cal.trace
+ 1230.638260 TAB   W 11:000                                 0x00000000
+ 1230.638266 TAB   W 11:001                                 0x00000000
+ 1230.638272 TAB   W 11:002                                 0x00000000
+ 1230.638279 TAB   W 11:003                                 0x00000000
+ 1230.638285 TAB   W 11:004                                 0x00000000
+ 1230.638291 TAB   W 11:005                                 0x00000000
+ 1230.638297 TAB   W 11:006                                 0x00000000
+ 1230.638303 TAB   W 11:007                                 0x00000000
+ 1230.638309 TAB   W 11:008                                 0x00000000
+ 1230.638315 TAB   W 11:009                                 0x00000000
+ 1230.638321 TAB   W 11:00a                                 0x00000000
+ 1230.638325 MAC   R 3e0       PHY_VER                      0x9900
+ 1230.638332 TAB   W 11:00b                                 0x00000000
+ 1230.638338 TAB   W 11:00c                                 0x00000000
+ 1230.638344 TAB   W 11:00d                                 0x00000000
+ 1230.638350 TAB   W 11:00e                                 0x00000000
